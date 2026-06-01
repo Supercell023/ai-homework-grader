@@ -1,32 +1,54 @@
 # AI 作业批改系统
 
-一个基于 AI 视觉模型的自动作业批改工具，专为大学物理/理工科课程的 PDF 作业设计。支持从 **上海交通大学 Canvas 教学系统**（`oc.sjtu.edu.cn`）自动获取学生提交的 PDF、调用 OpenAI 兼容接口进行 AI 批改、生成详细的成绩报告，并自动将分数和评语上传回 Canvas。
+一个基于 AI 视觉模型的自动作业批改工具，专为大学物理/理工科课程的 PDF 作业设计。支持从 ** Canvas 教学系统**（`oc.sjtu.edu.cn`）自动获取学生提交的 PDF、调用 OpenAI 兼容接口进行 AI 批改、生成详细的成绩报告，并自动将分数和评语上传回 Canvas。
 
 ---
 
 ## 目录
 
-- [功能概览](#功能概览)
-- [项目文件说明](#项目文件说明)
-- [环境要求](#环境要求)
-- [快速开始](#快速开始)
-  - [1. 安装依赖](#1-安装依赖)
-  - [2. 配置 API](#2-配置-api)
-  - [3. 独立批改（非 Canvas）](#3-独立批改非-canvas)
-  - [4. Canvas 集成批改](#4-canvas-集成批改)
-- [配置文件详解](#配置文件详解)
-- [命令行参数](#命令行参数)
-  - [独立批改参数](#独立批改参数)
-  - [Canvas 集成参数](#canvas-集成参数)
-  - [流程控制参数](#流程控制参数)
-- [评分策略说明](#评分策略说明)
-- [Canvas 集成工作流程](#canvas-集成工作流程)
-- [输出文件](#输出文件)
-- [安全与隐私](#安全与隐私)
-- [推荐使用流程](#推荐使用流程)
-- [常见问题与局限性](#常见问题与局限性)
-- [上传到 GitHub](#上传到-github)
-- [License](#license)
+- [AI 作业批改系统](#ai-作业批改系统)
+  - [目录](#目录)
+  - [功能概览](#功能概览)
+    - [核心批改能力](#核心批改能力)
+    - [Canvas LMS 集成](#canvas-lms-集成)
+    - [评价与安全](#评价与安全)
+  - [项目文件说明](#项目文件说明)
+  - [环境要求](#环境要求)
+    - [安装 Python 依赖](#安装-python-依赖)
+  - [快速开始](#快速开始)
+    - [1. 安装依赖](#1-安装依赖)
+    - [2. 配置 API](#2-配置-api)
+    - [3. 独立批改（非 Canvas）](#3-独立批改非-canvas)
+    - [4. Canvas 集成批改](#4-canvas-集成批改)
+      - [4.1 创建配置文件](#41-创建配置文件)
+      - [4.2 分步执行（推荐首次使用）](#42-分步执行推荐首次使用)
+  - [配置文件详解](#配置文件详解)
+  - [命令行参数](#命令行参数)
+    - [独立批改参数](#独立批改参数)
+    - [Canvas 集成参数](#canvas-集成参数)
+    - [流程控制参数](#流程控制参数)
+  - [评分策略说明](#评分策略说明)
+    - [1. 基础评分模式（`--grading-mode`）](#1-基础评分模式--grading-mode)
+    - [2. 助教差异评分（默认启用）](#2-助教差异评分默认启用)
+    - [3. 三道防线防止评分错误](#3-三道防线防止评分错误)
+  - [Canvas 集成工作流程](#canvas-集成工作流程)
+    - [学生身份映射机制](#学生身份映射机制)
+    - [Canvas 评语格式](#canvas-评语格式)
+    - [Canvas API 频率限制](#canvas-api-频率限制)
+  - [输出文件](#输出文件)
+  - [安全与隐私](#安全与隐私)
+    - [不要提交到 GitHub 的内容](#不要提交到-github-的内容)
+    - [API 密钥安全](#api-密钥安全)
+    - [Canvas 上传安全](#canvas-上传安全)
+  - [推荐使用流程](#推荐使用流程)
+    - [首次使用（独立批改）](#首次使用独立批改)
+    - [首次使用（Canvas 集成）](#首次使用canvas-集成)
+    - [多助教分工](#多助教分工)
+  - [常见问题与局限性](#常见问题与局限性)
+    - [校园网代理问题](#校园网代理问题)
+    - [上下文窗口限制](#上下文窗口限制)
+    - [已知局限](#已知局限)
+  - [License](#license)
 
 ---
 
@@ -454,85 +476,6 @@ Thumbs.db
 - 参考答案 PDF 需要题号标注清晰，模糊的标注可能影响题目识别
 
 ---
-
-## 上传到 GitHub
-
-### 准备工作
-
-在上传前，确认以下几点：
-
-1. **`.gitignore` 已创建** — 项目已有 `.gitignore`，确保 PDF、xlsx、成绩数据不被提交
-
-2. **检查是否有敏感信息** — 确认没有硬编码的 API key、token、密码
-
-3. **确认 git 已安装**，在项目根目录：
-
-```powershell
-git --version
-```
-
-### 上传步骤
-
-#### 第 1 步：初始化 Git 仓库（如果尚未初始化）
-
-```powershell
-cd "c:\Users\TingYu\OneDrive\文档\auto_correcting_homework"
-git init
-```
-
-#### 第 2 步：添加文件并创建首次提交
-
-```powershell
-git add .gitignore README.md SKILL.auto-homework-grader.patch.md grade_homework_skill_patch.py canvas_integration.py
-git status
-```
-
-确认只有以上 5 个文件被暂存，**没有** PDF、xlsx、成绩文件夹等敏感文件。
-
-```powershell
-git commit -m "Initial commit: AI homework grading system with Canvas LMS integration"
-```
-
-#### 第 3 步：在 GitHub 上创建新仓库
-
-1. 打开 https://github.com/new
-2. 填写仓库名（如 `ai-homework-grader`）
-3. **不要**勾选 "Add a README file"（已有）
-4. **不要**勾选 ".gitignore"（已有）
-5. 选择 Public 或 Private（推荐 Private，因为这是课程相关工具）
-6. 点击 "Create repository"
-
-#### 第 4 步：关联远程仓库并推送
-
-GitHub 创建完成后，会显示类似以下命令。在本地终端执行：
-
-```powershell
-git remote add origin https://github.com/你的用户名/ai-homework-grader.git
-git branch -M main
-git push -u origin main
-```
-
-> 如果遇到认证问题，可以使用 GitHub CLI（`gh auth login`）或 Personal Access Token。
-
-#### 第 5 步：验证
-
-打开 `https://github.com/你的用户名/ai-homework-grader`，确认：
-- 文件列表正确（5 个文件）
-- **没有** PDF / xlsx / 成绩数据
-- README 正常渲染
-
-### 后续更新
-
-每次修改代码后：
-
-```powershell
-git add .                    # 暂存所有更改
-git status                   # 检查有无敏感文件
-git commit -m "描述你的改动"
-git push
-```
-
-> **再次提醒**：每次 push 前务必 `git status` 确认不会误传学生数据。`.gitignore` 已排除常见敏感文件，但新增的非标准文件类型需要手动确认。
 
 ---
 
