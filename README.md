@@ -128,7 +128,7 @@ pdftoppm -v
 **AI 批改接口**（必需）：
 
 ```powershell
-$env:AI_GRADER_API_KEY  = "your_api_key"
+$env:AI_GRADER_API_KEY  = "sk-cwz2lcmhagp1fign9iktie730ai3bsfhreghce9tdolyya79"
 $env:AI_GRADER_BASE_URL = "https://your-provider.example/api/v1"
 $env:AI_GRADER_MODEL    = "qwen"
 ```

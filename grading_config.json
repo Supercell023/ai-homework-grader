@@ -1,24 +1,25 @@
 {
   "canvas_course_id": "87616",
-  "canvas_assignment_id": "409604",
+  "canvas_assignment_id": "411834",
 
-  "answer": "D:\\ASUS\\大物成绩\\2026第二学期\\第9次作业答案.pdf",
+  "answer": "D:\\ASUS\\大物成绩\\2026第二学期\\第10次作业参考答案.pdf",
 
   "regular_points": 10,
   "bonus_points": 2,
   "grading_mode": "lenient",
 
-  "canvas_student_slice": "46:48",
+  "canvas_student_slice": "1:103",
   "backend": "chat-vision",
-  "model": "qwen",
+  "model": "mimo-v2.5",
 
-  "max_pdfs": 2,
-  "output_dir": ".\\grading_output_test",
+  "max_pdfs": 60,
+  "output_dir": "D:\\ASUS\\大物成绩\\2026第二学期\\第十（2）次作业",
 
   "blank_review_scores": true,
   "score_decimals": 1,
-  "review_threshold": 0.65,
+  "review_threshold": 0.75,
 
+  "canvas_ungraded_only": true,
   "roster": null,
   "_comment_roster": "可选: 本地花名册 xlsx 路径, 用于填充 Canvas 缺失的学号",
 

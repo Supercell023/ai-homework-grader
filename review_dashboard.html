@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>作业批改审查面板</title>
+<style>
+:root {
+  --bg:#1e1e2e; --panel:#252536; --card:#2a2a3d; --text:#cdd6f4; --text2:#a6adc8;
+  --text3:#6c7086; --accent:#89b4fa; --green:#a6e3a1; --yellow:#f9e2af;
+  --red:#f38ba8; --border:#45475a; --hover:#313244; --input-bg:#313244;
+  --btn:#45475a; --btn-hover:#585b70; --shadow:0 2px 8px rgba(0,0,0,.3);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden}
+
+/* ── Top Bar ── */
+.topbar{display:flex;align-items:center;gap:10px;padding:8px 14px;background:var(--panel);border-bottom:1px solid var(--border);z-index:10;flex-shrink:0;flex-wrap:wrap}
+.topbar h1{font-size:17px;font-weight:600;margin-right:auto;white-space:nowrap}
+.topbar input[type=file]{display:none}
+.btn{padding:5px 12px;border-radius:5px;border:1px solid var(--border);background:var(--btn);color:var(--text);cursor:pointer;font-size:12px;white-space:nowrap;transition:.15s}
+.btn:hover{background:var(--btn-hover)}
+.btn.primary{background:var(--accent);color:#1e1e2e;border-color:var(--accent);font-weight:600}
+.btn.primary:hover{opacity:.85}
+.btn.danger{background:var(--red);color:#1e1e2e;border-color:var(--red);font-weight:600}
+.btn.small{padding:3px 8px;font-size:11px}
+.badge{font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600;white-space:nowrap}
+.badge.green{background:#1a4a1a;color:var(--green)}.badge.yellow{background:#3d2e0a;color:var(--yellow)}.badge.red{background:#3d0a1a;color:var(--red)}
+.stats{display:flex;gap:12px;font-size:12px;color:var(--text2)}.stats span{white-space:nowrap}
+
+/* ── Main Layout ── */
+.main{display:flex;flex:1;overflow:hidden}
+
+/* ── Sidebar ── */
+.sidebar{width:270px;min-width:270px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+.sidebar-header{padding:8px 10px;border-bottom:1px solid var(--border)}
+.sidebar-header input{width:100%;padding:6px 10px;border-radius:5px;border:1px solid var(--border);background:var(--input-bg);color:var(--text);font-size:12px;outline:none}
+.sidebar-header input:focus{border-color:var(--accent)}
+.sidebar-filters{display:flex;gap:3px;padding:6px 10px;border-bottom:1px solid var(--border)}
+.sidebar-filters button{flex:1;padding:4px 0;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--text2);cursor:pointer;font-size:10px}
+.sidebar-filters button.active{background:var(--accent);color:#1e1e2e;border-color:var(--accent)}
+.student-list{flex:1;overflow-y:auto;padding:3px 0}
+.student-item{display:flex;align-items:center;gap:7px;padding:7px 10px;cursor:pointer;border-left:3px solid transparent;transition:.1s;font-size:12px}
+.student-item:hover{background:var(--hover)}
+.student-item.active{background:var(--hover);border-left-color:var(--accent)}
+.student-item .dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.student-item .dot.ok{background:var(--green)}.student-item .dot.flag{background:var(--yellow)}.student-item .dot.error{background:var(--red)}
+.student-item .info{flex:1;min-width:0}
+.student-item .name{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.student-item .sid{font-size:10px;color:var(--text3)}
+.student-item .score{font-size:11px;font-weight:600;white-space:nowrap}
+.student-item .mod-marker{color:var(--yellow);font-size:11px;flex-shrink:0}
+
+/* ── Content ── */
+.content{flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg)}
+.content-header{padding:10px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.content-header h2{font-size:15px}.content-header .meta{font-size:11px;color:var(--text3)}
+.content-header .nav-btns{display:flex;gap:4px;margin-left:auto}
+.question-area{flex:1;overflow-y:auto;padding:12px 18px}
+.question-card{background:var(--card);border-radius:7px;padding:14px;margin-bottom:10px;border:1px solid var(--border);box-shadow:var(--shadow)}
+.question-card.flagged{border-color:var(--yellow);background:#2d2a1a}
+.question-card.error{border-color:var(--red);background:#2d1a1e}
+.q-header{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.q-id{font-size:14px;font-weight:600}
+.q-score-group{display:flex;align-items:center;gap:5px;margin-left:auto}
+.q-score-group input[type=number]{width:60px;padding:3px 6px;border-radius:4px;border:1px solid var(--border);background:var(--input-bg);color:var(--text);font-size:13px;text-align:center;font-weight:600}
+.q-score-group input:focus{border-color:var(--accent);outline:none}
+.q-max{font-size:13px;color:var(--text3)}
+.q-confidence{font-size:11px;padding:2px 5px;border-radius:3px}
+.conf-high{background:#1a4a1a;color:var(--green)}.conf-mid{background:#3d2e0a;color:var(--yellow)}.conf-low{background:#3d0a1a;color:var(--red)}
+.q-feedback-label{font-size:10px;color:var(--text3);text-transform:uppercase;margin-bottom:3px}
+.q-feedback{background:var(--input-bg);border:1px solid var(--border);border-radius:5px;padding:8px 10px;font-size:12px;color:var(--text);line-height:1.6;min-height:36px;outline:none;width:100%;resize:vertical;font-family:inherit}
+.q-feedback:focus{border-color:var(--accent)}
+.q-actions{display:flex;gap:8px;margin-top:6px;align-items:center}
+.q-actions label{font-size:11px;color:var(--text2);display:flex;align-items:center;gap:3px;cursor:pointer}
+.q-actions input[type=checkbox]{accent-color:var(--yellow)}
+
+/* Canvas comment card */
+.canvas-comment-card{background:#1a2733;border:1px solid #2a4a6a;border-radius:6px;padding:10px 14px;margin-top:12px}
+.canvas-comment-card .cc-header{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.canvas-comment-card .cc-header span{font-size:11px;color:#6a9ac6;font-weight:600}
+.canvas-comment-card .cc-body{font-size:12px;color:#b8d4e8;line-height:1.6;white-space:pre-wrap}
+.canvas-comment-card .cc-body[contenteditable]{background:var(--input-bg);border-radius:4px;padding:6px 8px;outline:none;min-height:40px}
+.canvas-comment-card .cc-body[contenteditable]:focus{border:1px solid var(--accent)}
+
+/* Answer key in question */
+.ak-inline{background:#1a2733;border:1px solid #2a4a6a;border-radius:5px;padding:8px 12px;margin-top:6px;font-size:11px;color:#8ab4d6;max-height:160px;overflow-y:auto;display:none}
+.ak-inline.show{display:block}.ak-inline pre{white-space:pre-wrap;font-family:inherit;margin:0}
+
+/* ── Right Panel ── */
+.right-panel{width:320px;min-width:320px;background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+.right-panel h3{padding:10px 14px;font-size:13px;border-bottom:1px solid var(--border);flex-shrink:0}
+.rp-section{overflow-y:auto;padding:6px 14px;border-bottom:1px solid var(--border)}
+.rp-section:last-child{flex:1}
+.answer-item{padding:7px 0;border-bottom:1px solid var(--border);font-size:11px}
+.answer-item:last-child{border-bottom:none}
+.answer-item .a-qid{font-weight:600;color:var(--accent);margin-bottom:1px}
+.answer-item .a-text{color:var(--text2);line-height:1.5}
+
+.stat-row{display:flex;justify-content:space-between;padding:5px 0;font-size:11px;border-bottom:1px solid rgba(255,255,255,.04)}
+.stat-row .s-label{color:var(--text2)}.stat-row .s-val{font-weight:600}
+
+/* Histogram */
+.histogram{width:100%;height:120px;margin-top:6px}
+.histogram svg{width:100%;height:100%}
+.histogram .bar{fill:var(--accent);opacity:.7;transition:.2s}
+.histogram .bar:hover{opacity:1}
+.histogram text{fill:var(--text2);font-size:9px}
+
+/* Batch ops */
+.batch-ops{display:flex;gap:4px;padding:8px 14px}
+
+/* Empty state */
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--text3);gap:14px;text-align:center}
+.empty svg{opacity:.3}.empty p{font-size:13px}
+
+/* Modal */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;display:flex;align-items:center;justify-content:center}
+.modal{background:var(--panel);border-radius:10px;padding:24px;max-width:700px;width:90%;max-height:80vh;overflow-y:auto;border:1px solid var(--border);box-shadow:0 8px 32px rgba(0,0,0,.5)}
+.modal h3{margin-bottom:12px}.modal .close{float:right;background:none;border:none;color:var(--text3);cursor:pointer;font-size:18px}
+
+.kbd-hint{position:fixed;bottom:10px;right:14px;font-size:10px;color:var(--text3);background:var(--panel);padding:5px 8px;border-radius:5px;border:1px solid var(--border);z-index:5}
+
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+</style>
+</head>
+<body>
+
+<!-- Top Bar -->
+<div class="topbar" id="topbar">
+  <h1>📋 作业批改审查</h1>
+  <label class="btn" for="loadResults">📂 results.json</label>
+  <input type="file" id="loadResults" accept=".json">
+  <label class="btn" for="loadAnswerKey">📄 answer_key.json</label>
+  <input type="file" id="loadAnswerKey" accept=".json">
+  <span class="stats">
+    <span id="statTotal">共 <b>0</b></span>
+    <span id="statReviewed">已审查 <b>0</b></span>
+    <span id="statFlagged">待复核 <b>0</b></span>
+    <span id="statModified">已修改 <b>0</b></span>
+  </span>
+  <button class="btn primary" id="btnSave" disabled>💾 下载 results.json</button>
+  <button class="btn" id="btnBatchAll" disabled title="将所有学生标为已审查">✅ 全部标为已审查</button>
+  <button class="btn" id="btnClearFlags" disabled title="清除所有复核标记">🧹 清除所有复核标记</button>
+  <button class="btn" id="btnStatsModal" disabled>📊 统计图表</button>
+</div>
+
+<!-- Main -->
+<div class="main">
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-header"><input type="text" id="searchInput" placeholder="🔍 搜索姓名或学号..." disabled></div>
+    <div class="sidebar-filters">
+      <button data-filter="all" class="active">全部</button>
+      <button data-filter="flagged">⚠ 待复核</button>
+      <button data-filter="unreviewed">📝 未审查</button>
+      <button data-filter="reviewed">✅ 已审查</button>
+    </div>
+    <div class="student-list" id="studentList"><div class="empty"><p>👆 加载 results.json</p></div></div>
+  </div>
+
+  <!-- Main Content -->
+  <div class="content" id="contentArea">
+    <div class="empty"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 12h6m-3-3v6m-7 4V5a2 2 0 012-2h10a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg><p>选择一个学生开始审查</p></div>
+  </div>
+
+  <!-- Right Panel -->
+  <div class="right-panel" id="rightPanel">
+    <h3>📖 参考答案</h3>
+    <div class="rp-section" id="answerKeyList"><div class="empty"><p>加载 answer_key.json</p></div></div>
+    <h3>📊 题目统计</h3>
+    <div class="rp-section" id="questionStats" style="max-height:200px"><div class="empty"><p>加载数据后显示</p></div></div>
+    <div class="batch-ops">
+      <button class="btn small" id="btnBatchReviewed" disabled style="flex:1">✅ 全部标为已审查</button>
+      <button class="btn small" id="btnResetAll" disabled style="flex:1">🔄 重置所有修改</button>
+    </div>
+  </div>
+</div>
+
+<!-- Stats Modal -->
+<div class="modal-overlay" id="statsModal" style="display:none">
+  <div class="modal">
+    <button class="close" onclick="closeModal()">✕</button>
+    <h3>📊 分数分布</h3>
+    <div class="histogram" id="histogram"></div>
+    <h3 style="margin-top:16px">📋 逐题详情</h3>
+    <div id="questionDetailStats"></div>
+  </div>
+</div>
+
+<div class="kbd-hint">⌨ ↑↓ 选学生 &nbsp;|&nbsp; ←→ 换题 &nbsp;|&nbsp; Space 已审查 &nbsp;|&nbsp; Ctrl+S 保存</div>
+
+<script>
+// ═══════════════════════════════════════════════
+// State
+// ═══════════════════════════════════════════════
+let results = [];
+let originalResults = null; // deep clone for mod detection
+let answerKey = null;
+let currentIdx = -1;
+let currentFilter = 'all';
+let reviewedSet = new Set();
+const STORAGE_KEY = 'rd_reviewed2';
+const LAST_IDX_KEY = 'rd_lastIdx2';
+const RESULTS_KEY = 'rd_results2';
+const ORIG_KEY = 'rd_original2';
+const AK_KEY = 'rd_ak2';
+
+// Restore
+try {
+  const s = localStorage.getItem(STORAGE_KEY); if (s) reviewedSet = new Set(JSON.parse(s));
+  const l = localStorage.getItem(LAST_IDX_KEY); if (l) currentIdx = parseInt(l);
+} catch(e) {}
+try {
+  const r = sessionStorage.getItem(RESULTS_KEY);
+  if (r) {
+    results = JSON.parse(r);
+    const o = sessionStorage.getItem(ORIG_KEY);
+    originalResults = o ? JSON.parse(o) : JSON.parse(r);
+    if (Array.isArray(results) && results.length > 0) {
+      if (currentIdx < 0 || currentIdx >= results.length) currentIdx = 0;
+      initUI();
+    }
+  }
+  const a = sessionStorage.getItem(AK_KEY); if (a) { answerKey = JSON.parse(a); renderAnswerKey(); renderQuestionStats(); }
+} catch(e) {}
+
+// ═══════════════════════════════════════════════
+// File Loaders
+// ═══════════════════════════════════════════════
+document.getElementById('loadResults').addEventListener('change', function(e) {
+  const file = e.target.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function() {
+    try {
+      results = JSON.parse(reader.result);
+      if (!Array.isArray(results)) { alert('格式错误：需要 JSON 数组'); return; }
+      originalResults = JSON.parse(JSON.stringify(results));
+      currentIdx = results.length > 0 ? Math.min(Math.max(currentIdx, 0), results.length - 1) : -1;
+      if (currentIdx < 0 && results.length > 0) currentIdx = 0;
+      sessionStorage.setItem(RESULTS_KEY, JSON.stringify(results));
+      sessionStorage.setItem(ORIG_KEY, JSON.stringify(originalResults));
+      initUI();
+    } catch(err) { alert('解析失败: ' + err.message); }
+  };
+  reader.readAsText(file);
+});
+
+document.getElementById('loadAnswerKey').addEventListener('change', function(e) {
+  const file = e.target.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function() {
+    try {
+      answerKey = JSON.parse(reader.result);
+      sessionStorage.setItem(AK_KEY, JSON.stringify(answerKey));
+      renderAnswerKey();
+      renderQuestionStats();
+    } catch(err) { alert('解析答案失败: ' + err.message); }
+  };
+  reader.readAsText(file);
+});
+
+function initUI() {
+  document.getElementById('searchInput').disabled = false;
+  document.getElementById('btnSave').disabled = false;
+  document.getElementById('btnBatchAll').disabled = false;
+  document.getElementById('btnClearFlags').disabled = false;
+  document.getElementById('btnStatsModal').disabled = false;
+  document.getElementById('btnBatchReviewed').disabled = false;
+  document.getElementById('btnResetAll').disabled = false;
+  renderAll();
+}
+
+// ═══════════════════════════════════════════════
+// Python port: _humanize_feedback & format_feedback_comment
+// ═══════════════════════════════════════════════
+function humanizeFeedback(feedback) {
+  let f = (feedback || '').trim();
+  const prefixes = [
+    "基本参数正确。但", "思路正确。但", "推导正确。但", "整体思路对，但",
+    "基本正确，但", "大体正确，但", "大体上正确，但",
+    "基本参数正确。但在", "思路正确。但在"
+  ];
+  for (const p of prefixes) { if (f.startsWith(p)) { f = f.substring(p.length); break; } }
+  f = f.replace(/在[写作]*[一-鿿A-Za-z]+时[，,]\s*/g, "");
+  f = f.replace(/[，,。；;：:！!]+$/g, "");
+  if (f.length > 35) f = f.substring(0, 32) + "...";
+  return f || "有小错误";
+}
+
+function formatFeedbackComment(result) {
+  const problemQids = [];
+  for (const q of (result.questions || [])) {
+    const score = q.score || 0;
+    const maxQ = q.max_points || 0;
+    const ratio = maxQ > 0 ? score / maxQ : 1;
+    if (maxQ > 0 && (ratio < 0.8 || q.needs_review)) {
+      const qid = String(q.id || '').replace(/第/g, '').replace(/题/g, '');
+      problemQids.push(qid);
+    }
+  }
+  if (problemQids.length === 0) return "都对了，做得不错~";
+  const qids = problemQids.join("、");
+  return `第${qids}题有问题，请查看。`;
+}
+
+// ═══════════════════════════════════════════════
+// Filters & Search
+// ═══════════════════════════════════════════════
+function getFilteredStudents() {
+  let filtered = results.map((r, i) => ({...r, _idx: i}));
+  const search = document.getElementById('searchInput').value.trim().toLowerCase();
+  if (search) {
+    filtered = filtered.filter(s => (s.name||'').toLowerCase().includes(search) || (s.student_id||'').toLowerCase().includes(search));
+  }
+  switch (currentFilter) {
+    case 'flagged': filtered = filtered.filter(s => s.needs_review || (s.questions||[]).some(q => q.needs_review)); break;
+    case 'unreviewed': filtered = filtered.filter(s => !reviewedSet.has(s._idx)); break;
+    case 'reviewed': filtered = filtered.filter(s => reviewedSet.has(s._idx)); break;
+  }
+  return filtered;
+}
+
+// ═══════════════════════════════════════════════
+// Render
+// ═══════════════════════════════════════════════
+function renderAll() {
+  renderStudentList();
+  renderContent();
+  renderQuestionStats();
+  updateStats();
+}
+
+function getStudentStatus(s) {
+  const hasFlag = s.needs_review || (s.questions||[]).some(q => q.needs_review);
+  const hasZero = (s.questions||[]).some(q => (q.score||0)===0 && (q.max_points||0)>0);
+  if (hasZero) return 'error'; if (hasFlag) return 'flag'; return 'ok';
+}
+
+function isModified(idx) {
+  if (!originalResults) return false;
+  const curr = results[idx], orig = originalResults[idx];
+  if (!orig) return false;
+  if ((curr.total_score||0) !== (orig.total_score||0)) return true;
+  if ((curr.needs_review||false) !== (orig.needs_review||false)) return true;
+  if (curr.canvas_comment !== orig.canvas_comment) return true;
+  const cq = curr.questions||[], oq = orig.questions||[];
+  if (cq.length !== oq.length) return true;
+  for (let i = 0; i < cq.length; i++) {
+    if ((cq[i].score||0) !== (oq[i].score||0)) return true;
+    if ((cq[i].feedback||'') !== (oq[i].feedback||'')) return true;
+    if ((cq[i].needs_review||false) !== (oq[i].needs_review||false)) return true;
+  }
+  return false;
+}
+
+function renderStudentList() {
+  const listEl = document.getElementById('studentList');
+  const savedScroll = listEl.scrollTop;
+  const filtered = getFilteredStudents();
+  if (filtered.length === 0) {
+    listEl.innerHTML = '<div class="empty"><p>没有匹配的学生</p></div>';
+    return;
+  }
+  listEl.innerHTML = filtered.map(s => {
+    const status = getStudentStatus(s);
+    const active = s._idx === currentIdx ? ' active' : '';
+    const reviewed = reviewedSet.has(s._idx) ? ' ✅' : '';
+    const mod = isModified(s._idx) ? ' <span class="mod-marker">✏️</span>' : '';
+    const name = s.name || '未知', sid = s.student_id || '';
+    const score = s.total_score!=null ? Number(s.total_score).toFixed(1) : '?';
+    const max = s.max_score!=null ? Number(s.max_score).toFixed(1) : '?';
+    return `<div class="student-item${active}" data-idx="${s._idx}">
+      <span class="dot ${status}"></span>
+      <span class="info"><span class="name">${escHtml(name)}${reviewed}${mod}</span><span class="sid">${escHtml(sid)}</span></span>
+      <span class="score">${score}/${max}</span>
+    </div>`;
+  }).join('');
+
+  listEl.querySelectorAll('.student-item').forEach(el => {
+    el.addEventListener('click', function() {
+      currentIdx = parseInt(this.dataset.idx); renderAll();
+    });
+  });
+  listEl.scrollTop = savedScroll;
+}
+
+function renderContent() {
+  const area = document.getElementById('contentArea');
+  // Save scroll position of question-area before re-render
+  const qArea = area.querySelector('.question-area');
+  const savedScroll = qArea ? qArea.scrollTop : 0;
+  if (currentIdx < 0 || currentIdx >= results.length) {
+    area.innerHTML = `<div class="empty"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 12h6m-3-3v6m-7 4V5a2 2 0 012-2h10a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg><p>选择一个学生开始审查</p></div>`;
+    return;
+  }
+
+  const s = results[currentIdx];
+  const name = escHtml(s.name || '未知'), sid = escHtml(s.student_id || '???');
+  const total = s.total_score!=null ? Number(s.total_score).toFixed(1) : '?';
+  const max = s.max_score!=null ? Number(s.max_score).toFixed(1) : '?';
+  const isRev = reviewedSet.has(currentIdx);
+  const needsRev = s.needs_review || (s.questions||[]).some(q => q.needs_review);
+  const mod = isModified(currentIdx);
+  const canvasComment = s.canvas_comment || formatFeedbackComment(s);
+
+  // Build questions HTML
+  let qHtml = '';
+  (s.questions||[]).forEach((q, qi) => {
+    const score = q.score!=null ? q.score : 0;
+    const maxPts = q.max_points!=null ? q.max_points : 0;
+    const conf = q.confidence!=null ? q.confidence : 1;
+    const flagged = q.needs_review || false;
+    const feedback = q.feedback || '';
+    const reason = q.review_reason || '';
+    const confClass = conf>=0.8 ? 'conf-high' : conf>=0.65 ? 'conf-mid' : 'conf-low';
+    const cardClass = flagged ? 'flagged' : (score===0 && maxPts>0 ? 'error' : '');
+    const aKey = answerKey ? findAnswerKey(q.id) : null;
+
+    qHtml += `<div class="question-card ${cardClass}" data-qidx="${qi}">
+      <div class="q-header">
+        <span class="q-id">第${escHtml(String(q.id||'?'))}题</span>
+        <span class="q-confidence ${confClass}">置信度 ${(conf*100).toFixed(0)}%</span>
+        <div class="q-score-group">
+          <input type="number" step="0.1" min="0" max="${maxPts}" value="${score}"
+            data-qidx="${qi}" class="q-score-input" onchange="onScoreChange(${qi}, this.value)" onfocus="this.select()">
+          <span class="q-max">/ ${maxPts}</span>
+        </div>
+      </div>
+      ${reason ? `<div style="font-size:10px;color:var(--yellow);margin-bottom:5px;">🔍 复核原因: ${escHtml(reason)}</div>` : ''}
+      <div class="q-feedback-label">AI 反馈（可编辑）</div>
+      <textarea class="q-feedback" data-qidx="${qi}" oninput="onFeedbackChange(${qi}, this.value)" rows="2">${escHtml(feedback)}</textarea>
+      ${aKey ? `<div class="ak-inline show"><div style="font-size:10px;color:#6a9ac6;margin-bottom:3px;">📖 标准答案</div><pre>${escHtml(truncate(String(aKey.answer||aKey.solution||JSON.stringify(aKey)), 500))}</pre></div>` : ''}
+      <div class="q-actions">
+        <label><input type="checkbox" ${flagged ? 'checked' : ''} onchange="onFlagChange(${qi}, this.checked)"> ⚠ 标记需复核</label>
+      </div>
+    </div>`;
+  });
+
+  // Canvas comment card
+  const ccHtml = `<div class="canvas-comment-card">
+    <div class="cc-header"><span>💬 上传到 Canvas 的评语（可编辑）</span><button class="btn small" onclick="resetComment()" title="根据当前分数重新生成">🔄 重新生成</button></div>
+    <div class="cc-body" contenteditable="true" id="canvasCommentEditable"
+      onblur="onCanvasCommentChange(this.innerText)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();this.blur()}">${escHtml(canvasComment)}</div>
+  </div>`;
+
+  area.innerHTML = `<div class="content-header">
+    <h2>${name}${mod ? ' <span style="color:var(--yellow);font-size:13px">✏️ 已修改</span>' : ''}</h2>
+    <span class="meta">学号: ${sid} &nbsp;|&nbsp; 总分: <b>${total}/${max}</b></span>
+    <span class="badge ${needsRev ? 'yellow' : 'green'}">${needsRev ? '⚠ 待复核' : '✅ 正常'}</span>
+    ${isRev ? '<span class="badge green">已审查</span>' : ''}
+    <div class="nav-btns">
+      <button class="btn small" onclick="navStudent(-1)">◀ 上一位</button>
+      <button class="btn small" onclick="navStudent(1)">下一位 ▶</button>
+      <button class="btn small primary" id="btnToggleReviewed">${isRev ? '↩ 标为未审查' : '✓ 标为已审查'}</button>
+    </div>
+  </div>
+  <div class="question-area">${qHtml}${ccHtml}</div>`;
+
+  // Bind reviewed toggle
+  document.getElementById('btnToggleReviewed').addEventListener('click', function() {
+    toggleReviewed();
+  });
+
+  // Restore scroll position (skip on first load when savedScroll is 0)
+  if (savedScroll > 0) {
+    const newQArea = area.querySelector('.question-area');
+    if (newQArea) newQArea.scrollTop = savedScroll;
+  }
+
+  // Scroll active student into view
+  const activeEl = document.getElementById('studentList').querySelector('.student-item.active');
+  if (activeEl) activeEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function renderAnswerKey() {
+  const el = document.getElementById('answerKeyList');
+  if (!answerKey) { el.innerHTML = '<div class="empty"><p>加载 answer_key.json</p></div>'; return; }
+  const all = [...(answerKey.questions||[]), ...(answerKey.regular_questions||[]), ...(answerKey.bonus_questions||[])];
+  if (all.length === 0) { el.innerHTML = '<div class="empty"><p>未找到题目</p></div>'; return; }
+  el.innerHTML = all.map(q => {
+    const id = q.id||q.question_id||'?';
+    const ans = q.answer||q.solution||q.standard_answer||q.rubric||'（无详细答案）';
+    const pts = q.points||q.max_points||'';
+    return `<div class="answer-item"><div class="a-qid">第${id}题 ${pts ? '('+pts+'分)' : ''}</div><div class="a-text">${escHtml(truncate(String(ans),400))}</div></div>`;
+  }).join('');
+}
+
+function renderQuestionStats() {
+  const el = document.getElementById('questionStats');
+  if (!results.length) { el.innerHTML = '<div class="empty"><p>加载数据后显示</p></div>'; return; }
+
+  // Collect per-question scores
+  const qMap = {};
+  results.forEach(r => {
+    (r.questions||[]).forEach(q => {
+      const id = String(q.id||'?');
+      if (!qMap[id]) qMap[id] = { scores: [], max: q.max_points||0, flagged: 0, total: 0 };
+      qMap[id].scores.push(q.score||0);
+      qMap[id].max = Math.max(qMap[id].max, q.max_points||0);
+      if (q.needs_review) qMap[id].flagged++;
+      qMap[id].total++;
+    });
+  });
+
+  let html = '';
+  for (const [id, data] of Object.entries(qMap)) {
+    const avg = data.scores.reduce((a,b)=>a+b,0) / data.scores.length;
+    const lossRate = data.max > 0 ? ((data.max - avg) / data.max * 100).toFixed(0) : 0;
+    html += `<div class="stat-row">
+      <span class="s-label">第${id}题 (${data.total}人)</span>
+      <span class="s-val">均分 ${avg.toFixed(1)}/${data.max.toFixed(1)} &nbsp;失分率 ${lossRate}%</span>
+    </div>`;
+    if (data.flagged > 0) {
+      html += `<div class="stat-row" style="color:var(--yellow);font-size:10px">⚠ ${data.flagged} 人标记需复核</div>`;
+    }
+  }
+  el.innerHTML = html || '<div class="empty"><p>无题目数据</p></div>';
+}
+
+function updateStats() {
+  const total = results.length;
+  const reviewed = reviewedSet.size;
+  const flagged = results.filter((s,i) => s.needs_review || (s.questions||[]).some(q => q.needs_review)).length;
+  const modified = results.filter((s,i) => isModified(i)).length;
+  document.getElementById('statTotal').innerHTML = `共 <b>${total}</b>`;
+  document.getElementById('statReviewed').innerHTML = `已审查 <b>${reviewed}</b>`;
+  document.getElementById('statFlagged').innerHTML = `待复核 <b>${flagged}</b>`;
+  document.getElementById('statModified').innerHTML = `已修改 <b>${modified}</b>`;
+}
+
+// ═══════════════════════════════════════════════
+// Handlers
+// ═══════════════════════════════════════════════
+function onScoreChange(qi, val) {
+  if (currentIdx < 0) return;
+  results[currentIdx].questions[qi].score = parseFloat(val) || 0;
+  const total = results[currentIdx].questions.reduce((s, q) => s + (q.score||0), 0);
+  const decimals = results[currentIdx]._score_decimals ?? results[0]?._score_decimals ?? 1;
+  const factor = Math.pow(10, decimals);
+  results[currentIdx].total_score = Math.round(total * factor) / factor;
+  persist(); renderAll();
+}
+
+function onFeedbackChange(qi, val) {
+  if (currentIdx < 0) return;
+  results[currentIdx].questions[qi].feedback = val;
+  persist();
+}
+
+function onFlagChange(qi, checked) {
+  if (currentIdx < 0) return;
+  results[currentIdx].questions[qi].needs_review = checked;
+  const hasAny = results[currentIdx].questions.some(q => q.needs_review);
+  results[currentIdx].needs_review = hasAny;
+  persist(); renderAll();
+}
+
+function onCanvasCommentChange(text) {
+  if (currentIdx < 0) return;
+  results[currentIdx].canvas_comment = text;
+  persist();
+}
+
+function resetComment() {
+  if (currentIdx < 0) return;
+  results[currentIdx].canvas_comment = formatFeedbackComment(results[currentIdx]);
+  persist(); renderAll();
+}
+
+function toggleReviewed() {
+  if (currentIdx < 0) return;
+  if (reviewedSet.has(currentIdx)) {
+    reviewedSet.delete(currentIdx);
+  } else {
+    reviewedSet.add(currentIdx);
+    // Auto-advance to next unreviewed
+    const filtered = getFilteredStudents();
+    const curFIdx = filtered.findIndex(s => s._idx === currentIdx);
+    const next = filtered.slice(curFIdx + 1).find(s => !reviewedSet.has(s._idx));
+    if (next) currentIdx = next._idx;
+  }
+  persist(); renderAll();
+}
+
+function navStudent(dir) {
+  const filtered = getFilteredStudents();
+  const curFIdx = filtered.findIndex(s => s._idx === currentIdx);
+  const newFIdx = curFIdx + dir;
+  if (newFIdx >= 0 && newFIdx < filtered.length) {
+    currentIdx = filtered[newFIdx]._idx;
+    renderAll();
+  }
+}
+
+// ═══════════════════════════════════════════════
+// Persistence
+// ═══════════════════════════════════════════════
+function persist() {
+  try {
+    sessionStorage.setItem(RESULTS_KEY, JSON.stringify(results));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([...reviewedSet]));
+    localStorage.setItem(LAST_IDX_KEY, String(currentIdx));
+  } catch(e) {}
+}
+
+// ═══════════════════════════════════════════════
+// Batch operations
+// ═══════════════════════════════════════════════
+document.getElementById('btnBatchAll').addEventListener('click', function() {
+  if (!confirm('将所有学生标为"已审查"？')) return;
+  results.forEach((s, i) => reviewedSet.add(i));
+  persist(); renderAll();
+});
+
+document.getElementById('btnBatchReviewed').addEventListener('click', function() {
+  if (!confirm('将所有学生标为"已审查"？')) return;
+  results.forEach((s, i) => reviewedSet.add(i));
+  persist(); renderAll();
+});
+
+document.getElementById('btnClearFlags').addEventListener('click', function() {
+  if (!confirm('清除所有复核标记（将所有 needs_review 设为 false）？')) return;
+  results.forEach(s => {
+    s.needs_review = false;
+    (s.questions||[]).forEach(q => { q.needs_review = false; });
+  });
+  persist(); renderAll();
+});
+
+document.getElementById('btnResetAll').addEventListener('click', function() {
+  if (!confirm('重置所有修改到加载时的状态？此操作不可恢复。')) return;
+  if (!originalResults) { alert('没有原始数据'); return; }
+  results = JSON.parse(JSON.stringify(originalResults));
+  persist(); renderAll();
+});
+
+// Save
+document.getElementById('btnSave').addEventListener('click', function() {
+  // Clean up temporary field before saving
+  const clean = results.map(r => {
+    const { canvas_comment, ...rest } = r;
+    return rest;
+  });
+  downloadJSON(clean, 'results_reviewed.json');
+  alert('已下载 results_reviewed.json\n\n放入输出目录覆盖原 results.json，然后运行：\n\npython canvas_integration.py --config grading_config.json --canvas-upload-only\n\n或只重新生成 Excel：\n\npython canvas_integration.py --config grading_config.json --regenerate-excel');
+});
+
+// ═══════════════════════════════════════════════
+// Stats Modal
+// ═══════════════════════════════════════════════
+document.getElementById('btnStatsModal').addEventListener('click', function() { openStatsModal(); });
+function openStatsModal() {
+  document.getElementById('statsModal').style.display = 'flex';
+  renderHistogram();
+  renderDetailedStats();
+}
+function closeModal() { document.getElementById('statsModal').style.display = 'none'; }
+document.getElementById('statsModal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+
+function renderHistogram() {
+  if (!results.length) return;
+  const scores = results.map(r => r.total_score||0).filter(s => s !== null);
+  const maxScore = Math.max(...scores, 1);
+  const bins = 10;
+  const binWidth = maxScore / bins;
+  const buckets = new Array(bins).fill(0);
+  scores.forEach(s => {
+    const idx = Math.min(Math.floor(s / binWidth), bins - 1);
+    buckets[idx]++;
+  });
+
+  const svg = document.getElementById('histogram');
+  const w = 600, h = 120, pad = 30, gap = 2;
+  const maxCount = Math.max(...buckets, 1);
+  const barW = (w - pad*2) / bins - gap;
+
+  let svgHtml = `<svg viewBox="0 0 ${w} ${h}">`;
+  // Grid lines
+  for (let i = 0; i <= 4; i++) {
+    const y = pad + (h - pad*2) * i / 4;
+    svgHtml += `<line x1="${pad}" y1="${y}" x2="${w-pad}" y2="${y}" stroke="#45475a" stroke-width="0.5"/>`;
+    svgHtml += `<text x="${pad-4}" y="${y+3}" text-anchor="end">${Math.round(maxCount*(1-i/4))}</text>`;
+  }
+  // Bars
+  buckets.forEach((cnt, i) => {
+    const barH = cnt / maxCount * (h - pad*2);
+    const x = pad + i * (barW + gap);
+    const y = h - pad - barH;
+    const label = (i * binWidth).toFixed(1) + '-' + ((i+1)*binWidth).toFixed(1);
+    svgHtml += `<rect class="bar" x="${x}" y="${y}" width="${barW}" height="${barH}" rx="1">
+      <title>${label}: ${cnt} 人</title></rect>`;
+    if (i % 2 === 0) svgHtml += `<text x="${x+barW/2}" y="${h-4}" text-anchor="middle">${(i*binWidth).toFixed(0)}</text>`;
+  });
+  svgHtml += '</svg>';
+  svg.innerHTML = svgHtml;
+}
+
+function renderDetailedStats() {
+  const el = document.getElementById('questionDetailStats');
+  if (!results.length) { el.innerHTML = '<p>无数据</p>'; return; }
+
+  const qMap = {};
+  results.forEach(r => {
+    (r.questions||[]).forEach(q => {
+      const id = String(q.id||'?');
+      if (!qMap[id]) qMap[id] = { scores:[], max:q.max_points||0, confidences:[], flagged:0 };
+      qMap[id].scores.push(q.score||0);
+      qMap[id].confidences.push(q.confidence||0);
+      if (q.needs_review) qMap[id].flagged++;
+    });
+  });
+
+  let html = '<table style="width:100%;font-size:11px;border-collapse:collapse">';
+  html += '<tr style="color:var(--text3)"><th style="text-align:left">题号</th><th>人数</th><th>均分/满分</th><th>失分率</th><th>均置信度</th><th>待复核</th></tr>';
+  for (const [id, d] of Object.entries(qMap)) {
+    const avg = d.scores.reduce((a,b)=>a+b,0)/d.scores.length;
+    const avgConf = d.confidences.reduce((a,b)=>a+b,0)/d.confidences.length;
+    const loss = d.max>0 ? ((d.max-avg)/d.max*100).toFixed(0) : 0;
+    html += `<tr style="border-bottom:1px solid rgba(255,255,255,.05)">
+      <td><b>第${id}题</b></td><td style="text-align:center">${d.scores.length}</td>
+      <td style="text-align:center">${avg.toFixed(1)}/${d.max.toFixed(1)}</td>
+      <td style="text-align:center;color:${loss>30?'var(--red)':loss>15?'var(--yellow)':'var(--green)'}">${loss}%</td>
+      <td style="text-align:center">${(avgConf*100).toFixed(0)}%</td>
+      <td style="text-align:center;color:${d.flagged>0?'var(--yellow)':'var(--text3)'}">${d.flagged||'—'}</td>
+    </tr>`;
+  }
+  html += '</table>';
+  el.innerHTML = html;
+}
+
+// ═══════════════════════════════════════════════
+// Filters
+// ═══════════════════════════════════════════════
+document.querySelectorAll('.sidebar-filters button').forEach(btn => {
+  btn.addEventListener('click', function() {
+    document.querySelectorAll('.sidebar-filters button').forEach(b => b.classList.remove('active'));
+    this.classList.add('active');
+    currentFilter = this.dataset.filter;
+    renderAll();
+  });
+});
+document.getElementById('searchInput').addEventListener('input', () => renderAll());
+
+// ═══════════════════════════════════════════════
+// Keyboard
+// ═══════════════════════════════════════════════
+document.addEventListener('keydown', function(e) {
+  if (e.target.tagName === 'INPUT' || (e.target.getAttribute && e.target.getAttribute('contenteditable'))) {
+    if ((e.ctrlKey||e.metaKey) && e.key === 's') { e.preventDefault(); document.getElementById('btnSave').click(); }
+    return;
+  }
+  if (e.target.tagName === 'TEXTAREA') {
+    if ((e.ctrlKey||e.metaKey) && e.key === 's') { e.preventDefault(); document.getElementById('btnSave').click(); }
+    return;
+  }
+
+  const filtered = getFilteredStudents();
+  const curFIdx = filtered.findIndex(s => s._idx === currentIdx);
+
+  switch (e.key) {
+    case 'ArrowDown': case 'j':
+      e.preventDefault(); if (curFIdx < filtered.length - 1) { currentIdx = filtered[curFIdx+1]._idx; renderAll(); } break;
+    case 'ArrowUp': case 'k':
+      e.preventDefault(); if (curFIdx > 0) { currentIdx = filtered[curFIdx-1]._idx; renderAll(); } break;
+    case ' ': e.preventDefault(); if (currentIdx >= 0) toggleReviewed(); break;
+    case 's': if (e.ctrlKey||e.metaKey) { e.preventDefault(); document.getElementById('btnSave').click(); } break;
+  }
+});
+
+// ═══════════════════════════════════════════════
+// Helpers
+// ═══════════════════════════════════════════════
+function escHtml(str) { const d = document.createElement('div'); d.textContent = str; return d.innerHTML; }
+function truncate(t, max) { return String(t||'').length > max ? String(t).substring(0, max) + '…' : String(t||''); }
+function findAnswerKey(qid) {
+  if (!answerKey) return null;
+  const qidStr = String(qid).replace(/第/g,'').replace(/题/g,'').trim();
+  const all = [...(answerKey.questions||[]), ...(answerKey.regular_questions||[]), ...(answerKey.bonus_questions||[])];
+  for (const q of all) {
+    const aqid = String(q.id||q.question_id||'').replace(/第/g,'').replace(/题/g,'').trim();
+    if (aqid === qidStr) return q;
+  }
+  return null;
+}
+function downloadJSON(obj, filename) {
+  const blob = new Blob([JSON.stringify(obj, null, 2)], {type:'application/json'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; a.click();
+}
+</script>
+</body>
+</html>

@@ -1297,6 +1297,8 @@ def main() -> int:
             review_zero_scores=args.review_zero_scores,
         )
 
+        if results:
+            results[0]["_score_decimals"] = args.score_decimals
         (output_dir / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
         write_clean_grades(output_dir / "总成绩_三列表.xlsx", results, roster, args.blank_review_scores)
         write_details_xlsx(output_dir / "批改明细.xlsx", results)

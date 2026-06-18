@@ -31,6 +31,7 @@ import shutil
 import sys
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -441,35 +442,20 @@ def format_feedback_comment(
         pass
 
     # Collect problem questions (lost > 20% or flagged)
-    problems: list[tuple[str, str]] = []
+    problem_qids: list[str] = []
     for q in result.get("questions", []):
         score = q.get("score", 0)
         max_q = q.get("max_points", 0)
         ratio = score / max_q if max_q > 0 else 1.0
         if max_q > 0 and (ratio < 0.8 or q.get("needs_review")):
             qid = str(q.get("id", "")).replace("第", "").replace("题", "")
-            reason = _humanize_feedback(q.get("feedback", ""))
-            problems.append((qid, reason))
+            problem_qids.append(qid)
 
-    if not problems:
+    if not problem_qids:
         return "都对了，做得不错~"
 
-    # Build natural-sounding comment — no scores
-    qids = "、".join(p[0] for p in problems)
-
-    if len(problems) == 1:
-        qid, reason = problems[0]
-        end_punc = "" if reason.endswith("...") else ""
-        lines = [f"第{qid}题有点小问题——{reason}{end_punc}。其他题都挺好。"]
-    elif len(problems) <= 3:
-        details = "；".join(f"第{qid}题{reason}" for qid, reason in problems)
-        lines = [f"{details}。其余没问题。"]
-    else:
-        details = "、".join(f"第{qid}题" for qid, _ in problems)
-        lines = [f"{details}这几道题有些小问题，主要是思路细节没把握好。"]
-
-    if result.get("needs_review"):
-        lines.append("（分数已打，有空可以再看一眼）")
+    qids = "、".join(problem_qids)
+    return f"第{qids}题有问题，请查看。"
 
     return "\n".join(lines)
 
@@ -495,16 +481,18 @@ def build_extra_scoring_rules() -> str:
   即：这道题的最低得分 = 满分 × 0.5。
 - 例外：完全空白、或只写了一个孤立的错误数字且无任何推导步骤 → 才给 0 分。
 
-【写了过程 + 写了答案 → 一律只扣 0.1~0.2 分】
-- 只要学生的作答包含推导步骤和最终答案（两个都有），即使最终答案错了，也只扣 0.1~0.2 分。
-- 你不用判断答案是否正确。判断标准改为：学生有没有写过程？有没有写答案？两个都有 → 满分 - 0.1~0.2。
+【写了过程 + 写了答案 → 答案正确满分，答案错误至少扣 0.1 分】
+- 只要学生的作答包含推导步骤和最终答案（两个都有），需要判断答案是否正确。
+- 答案数学上等价于标准答案 → 满分，不扣分。
+- 答案不等价（即答案错误）→ 必须至少扣 0.1 分，无论思路是否正确。扣分范围 0.1~0.2。
+- 判断标准：学生有没有写过程？有没有写答案？两个都有且答案正确 → 满分；两个都有但答案错误 → 至少扣 0.1。
 - 例子：学生写满了一张纸的推导，最后答案算错了 → 扣 0.1，给 4.9/5.0。
 
-【正负号错误 — 极宽松】
-- 正负号写错（如 + 写成 -、sin 写成 -sin、相位多/少 π 等）:
-  * 如果学生的步骤完整、推导清晰 → 不扣分。符号是笔误，不反映理解水平。
+【正负号错误 — 宽松但必须扣分】
+- 正负号写错（如 + 写成 -、sin 写成 -sin、相位多/少 π 等）属于答案错误，必须至少扣 0.1 分。
+  * 如果学生的步骤完整、推导清晰 → 扣 0.1 分。符号极可能是笔误，但答案错误必须扣分。
   * 如果步骤跳跃、推导不完整、疑似乱猜 → 扣 0.1 分。
-- 判断标准：步骤多、逻辑连贯 → 极可能是笔误，不扣分。步骤少、跳跃大 → 可能是理解问题，扣 0.1。
+- 判断标准：无论步骤多少，正负号错误一律扣 0.1。
 
 【其他不扣分的情况】
 - 系数形式不同但等价、相位写法不同、用了不同坐标系、答案未化简、单位漏写（数值正确）、用近似值代替精确值 → 一律不扣分。
@@ -514,8 +502,8 @@ def build_extra_scoring_rules() -> str:
 | 学生情况 | 该给几分 |
 |---|---|
 | 有过程、有答案、结果正确 | 满分 |
-| 有过程、有答案、结果不对 | 满分 - 0.1~0.2 |
-| 有过程、有答案、正负号错了但步骤多 | 满分 |
+| 有过程、有答案、结果不对 | 满分 - 0.1~0.2（答案错误必须扣至少 0.1） |
+| 有过程、有答案、正负号错了但步骤多 | 满分 - 0.1（正负号错误也是答案错误，必须扣分） |
 | 有过程、有答案、正负号错了步骤少 | 满分 - 0.1 |
 | 有过程、没写最终答案 | 满分 - 0.3 |
 | 只写了一个答案数字，没有过程 | 满分 × 0.5 |
@@ -533,9 +521,9 @@ def build_extra_scoring_rules() -> str:
 1. 先看学生有没有写推导过程？有过程 → 跳到第 3 条。
 2. 没过程、只有答案数字 → 给满分的 50%。
 3. 有过程、也有答案 → 看答案是否数学上等价于标准答案？等价 → 满分。
-4. 不等价 → 看正负号：正负号错但步骤多 → 满分；步骤少 → 扣 0.1。
+4. 不等价 → 答案错误，必须至少扣 0.1 分。然后看正负号：正负号错但步骤多 → 扣 0.1；步骤少 → 扣 0.1。
 5. 正负号对但答案其他部分错 → 扣 0.1~0.2（上限！不要多扣）。
-6. 最后自问: 这个学生认真做了吗？认真做的迹象（写了过程、写了答案）→ 给满分或接近满分。
+6. 最后自问: 这个学生认真做了吗？认真做的迹象（写了过程、写了答案）→ 给满分或接近满分（但答案错误时至少扣 0.1）。
 
 【总体】
 - 评分时反复自问"这个学生懂不懂这道题？"如果答案是"懂"，就给满分或接近满分。
@@ -788,17 +776,216 @@ def detect_score_outliers(results: list[dict[str, Any]], std_threshold: float = 
 # Main workflow
 # ---------------------------------------------------------------------------
 
+def _regenerate_output_files(output_dir: Path, args: argparse.Namespace) -> int:
+    """Regenerate all Excel/MD output files from existing results.json and answer_key.json."""
+    results_path = output_dir / "results.json"
+    answer_key_path = output_dir / "answer_key.json"
+
+    if not results_path.exists():
+        raise SystemExit(f"results.json not found at {results_path}")
+    if not answer_key_path.exists():
+        raise SystemExit(f"answer_key.json not found at {answer_key_path}")
+
+    results = json.loads(results_path.read_text(encoding="utf-8"))
+    answer_key = json.loads(answer_key_path.read_text(encoding="utf-8"))
+    local_roster = read_roster(args.roster) if args.roster else None
+
+    print(f"Loaded {len(results)} results from {results_path}")
+    print(f"Regenerating output files in {output_dir}...")
+
+    write_clean_grades(
+        output_dir / "总成绩_三列表.xlsx", results, local_roster, args.blank_review_scores
+    )
+    write_details_xlsx(output_dir / "批改明细.xlsx", results)
+    write_review_xlsx(output_dir / "人工复核.xlsx", results)
+    write_details_md(output_dir / "批改详情.md", answer_key, results)
+
+    # Class analysis is optional
+    if not args.no_ai_analysis:
+        try:
+            ai_args = argparse.Namespace(
+                api_key=args.api_key, base_url=args.base_url, model=args.model,
+                backend=args.backend, render_dpi=args.render_dpi,
+                max_render_pages=args.max_render_pages,
+                chat_json_mode=not args.no_chat_json_mode, trust_env=args.trust_env,
+            )
+            ai = make_ai_backend_standalone(ai_args, output_dir)
+            write_class_analysis_md(
+                output_dir / "班级分析.md", ai, answer_key, results, False,
+                args.analysis_max_students,
+            )
+        except Exception as e:
+            print(f"  [SKIP] Class analysis failed (no AI available): {e}")
+
+    print_output_summary(output_dir)
+    return 0
+
+
+def export_canvas_grades(
+    canvas_roster: list[dict[str, Any]],
+    submissions: list[dict[str, Any]],
+    output_path: Path,
+) -> int:
+    """Export existing Canvas assignment grades to an Excel file.
+
+    No AI grading is performed — this simply pulls whatever scores are
+    already recorded in Canvas for the given assignment.
+    """
+    import html as _html
+
+    sub_map: dict[str, dict[str, Any]] = {}
+    for sub in submissions:
+        uid = sub.get("canvas_user_id")
+        if uid is not None:
+            sub_map[str(uid)] = sub
+
+    rows: list[list[Any]] = [["学号", "姓名", "Canvas ID", "分数", "等级", "提交时间", "状态"]]
+
+    matched_ids: set[str] = set()
+    for entry in canvas_roster:
+        uid = entry.get("canvas_user_id")
+        sid = str(entry.get("sis_user_id", ""))
+        name = str(entry.get("name", ""))
+        sub = sub_map.get(str(uid)) if uid is not None else None
+        matched_ids.add(str(uid))
+
+        score = ""
+        grade = ""
+        submitted_at = ""
+        status = "未提交"
+        if sub:
+            if sub.get("score") is not None:
+                score = sub["score"]
+            grade = str(sub.get("grade", "") or "")
+            raw_time = sub.get("submitted_at") or ""
+            if raw_time:
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
+                    submitted_at = dt.strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    submitted_at = raw_time[:16]
+            if sub.get("excused"):
+                status = "豁免"
+            elif sub.get("missing"):
+                status = "缺交"
+            elif sub.get("late"):
+                status = "迟交"
+            elif sub.get("workflow_state") == "graded":
+                status = "已评分"
+            elif sub.get("workflow_state") == "submitted":
+                status = "待评分"
+        rows.append([sid, name, uid, score, grade, submitted_at, status])
+
+    # Append submissions not in roster
+    for sub in submissions:
+        uid = str(sub.get("canvas_user_id", ""))
+        if uid in matched_ids:
+            continue
+        if sub.get("workflow_state") == "unsubmitted":
+            continue
+        name = str(sub.get("user_name", ""))
+        score = sub.get("score", "")
+        grade = str(sub.get("grade", "") or "")
+        raw_time = sub.get("submitted_at") or ""
+        submitted_at = ""
+        if raw_time:
+            try:
+                from datetime import datetime
+                dt = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
+                submitted_at = dt.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                submitted_at = raw_time[:16]
+        status = "已评分" if sub.get("workflow_state") == "graded" else "待评分"
+        if sub.get("late"):
+            status = "迟交"
+        rows.append(["", name, uid, score, grade, submitted_at, status])
+
+    # Sort by student_id (skip header)
+    header = rows[0]
+    data = rows[1:]
+    data.sort(key=lambda r: (str(r[0]), str(r[1])))
+    rows = [header] + data
+
+    # --- Self-contained xlsx writer ---
+    def _col_letter(index: int) -> str:
+        letters = ""
+        while index:
+            index, remainder = divmod(index - 1, 26)
+            letters = chr(ord("A") + remainder) + letters
+        return letters
+
+    def _cell_xml(value: Any, ref: str) -> str:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return f'<c r="{ref}"><v>{value}</v></c>'
+        text = _html.escape(str(value))
+        return f'<c r="{ref}" t="inlineStr"><is><t>{text}</t></is></c>'
+
+    def _sheet_xml(sheet_rows: list[list[Any]]) -> str:
+        row_xml = []
+        for ri, row in enumerate(sheet_rows, start=1):
+            cells = []
+            for ci, val in enumerate(row, start=1):
+                ref = f"{_col_letter(ci)}{ri}"
+                cells.append(_cell_xml(val, ref))
+            row_xml.append(f'<row r="{ri}">{"".join(cells)}</row>')
+        return (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            f'<sheetData>{"".join(row_xml)}</sheetData></worksheet>'
+        )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("_rels/.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            "</Relationships>")
+        zf.writestr("xl/worksheets/sheet1.xml", _sheet_xml(rows))
+        zf.writestr("xl/workbook.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            '<sheets><sheet name="成绩" sheetId="1" r:id="rId1"/></sheets></workbook>')
+        zf.writestr("xl/_rels/workbook.xml.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            "</Relationships>")
+        zf.writestr("[Content_Types].xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            "</Types>")
+
+    graded = sum(1 for r in rows[1:] if r[6] in ("已评分", "迟交", "豁免"))
+    print(f"Exported {len(rows) - 1} students ({graded} graded) to {output_path}")
+    return 0
+
+
 def integrated_main(args: argparse.Namespace) -> int:
     """Run the full Canvas → grade → Canvas pipeline."""
 
     # --- Setup output directory ---
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- Regenerate Excel only (no Canvas needed) ---
+    if args.regenerate_excel:
+        return _regenerate_output_files(output_dir, args)
+
     work_root = Path(tempfile.mkdtemp(prefix="canvas_grader_", dir=str(output_dir)))
 
     try:
         # --- Initialize Canvas client ---
-        canvas = CanvasClient(args.canvas_url, args.canvas_token, trust_env=False)
+        canvas_trust_env = args.trust_env
+        if canvas_trust_env is None:
+            canvas_trust_env = True  # Default: honor system proxy for Canvas
+        canvas = CanvasClient(args.canvas_url, args.canvas_token, trust_env=canvas_trust_env)
         course_id = args.canvas_course_id
         assignment_id = args.canvas_assignment_id
 
@@ -813,6 +1000,11 @@ def integrated_main(args: argparse.Namespace) -> int:
         print("Fetching submissions from Canvas...")
         submissions = canvas.get_submissions(course_id, assignment_id)
 
+        # --- Export grades only (no AI grading) ---
+        if args.canvas_export_grades:
+            export_path = output_dir / "Canvas成绩导出.xlsx"
+            return export_canvas_grades(grading_roster, submissions, export_path)
+
         submitted = [s for s in submissions if s["workflow_state"] not in ("unsubmitted",)]
         if not submitted:
             print("No submitted assignments found. Exiting.")
@@ -820,6 +1012,15 @@ def integrated_main(args: argparse.Namespace) -> int:
 
         # Sort by user_id for deterministic ordering
         submitted.sort(key=lambda s: s["canvas_user_id"] or 0)
+
+        # --- Filter to ungraded only if requested ---
+        if args.canvas_ungraded_only:
+            before = len(submitted)
+            submitted = [s for s in submitted if s.get("workflow_state") != "graded"]
+            print(f"--canvas-ungraded-only: filtered {before} -> {len(submitted)} ungraded submissions")
+            if not submitted:
+                print("All submitted assignments are already graded. Nothing to do.")
+                return 0
 
         # --- Apply student slice if requested ---
         if args.canvas_student_slice:
@@ -832,100 +1033,96 @@ def integrated_main(args: argparse.Namespace) -> int:
             submitted = submitted[start:stop]
             print(f"Student slice: {start}:{stop} → {len(submitted)} of {total} students selected")
 
+        # --- Build submission lookup (needed for already-graded check) ---
+        # Key by canvas_user_id for reliable lookup during upload
+        submission_map: dict[str, dict[str, Any]] = {
+            str(s["canvas_user_id"]): s for s in submitted
+        }
+
         # --- Download PDFs ---
-        print(f"Downloading PDFs for {len(submitted)} submissions...")
         pdf_dir = work_root / "canvas_pdfs"
         student_pdfs: list[Path] = []
-        submission_map: dict[str, dict[str, Any]] = {}  # filename -> submission info
 
-        for sub in submitted:
-            attachments = sub.get("attachments") or []
-            if not attachments:
-                print(f"  [SKIP] {sub['user_name']} (user {sub['canvas_user_id']}): no attachments")
-                continue
+        if args.canvas_upload_only:
+            print("--canvas-upload-only set; skipping PDF download.")
+        else:
+            print(f"Downloading PDFs for {len(submitted)} submissions...")
+            for sub in submitted:
+                attachments = sub.get("attachments") or []
+                if not attachments:
+                    print(f"  [SKIP] {sub['user_name']} (user {sub['canvas_user_id']}): no attachments")
+                    continue
 
-            # Use the first PDF attachment (or the only one)
-            pdf_attachments = [
-                a for a in attachments
-                if (a.get("content-type") or "").lower() == "application/pdf"
-                   or Path(a.get("display_name") or a.get("filename") or "").suffix.lower() == ".pdf"
-            ]
-            if not pdf_attachments:
-                # Fall back to first attachment regardless of type
-                pdf_attachments = [attachments[0]]
+                # Use the first PDF attachment (or the only one)
+                pdf_attachments = [
+                    a for a in attachments
+                    if (a.get("content-type") or "").lower() == "application/pdf"
+                       or Path(a.get("display_name") or a.get("filename") or "").suffix.lower() == ".pdf"
+                ]
+                if not pdf_attachments:
+                    # Fall back to first attachment regardless of type
+                    pdf_attachments = [attachments[0]]
 
-            attachment = pdf_attachments[0]
-            # Build a meaningful filename: {学号}_{name} or canvas_{user_id}_{name}
-            user_id = sub["canvas_user_id"]
-            user_name = sub.get("user_name", f"user_{user_id}")
-            # Look up student_id from grading_roster for the filename
-            roster_entry = next((r for r in grading_roster if r.get("canvas_user_id") == user_id), None)
-            student_sid = roster_entry.get("student_id", "") if roster_entry else ""
-            safe_name = re.sub(r"[^\w一-鿿\-]", "_", user_name)[:40]
-            if student_sid:
-                preferred = f"{student_sid}_{safe_name}"
-            else:
-                preferred = f"canvas_{user_id}_{safe_name}"
+                attachment = pdf_attachments[0]
+                user_id = sub["canvas_user_id"]
+                user_name = sub.get("user_name", f"user_{user_id}")
+                roster_entry = next((r for r in grading_roster if r.get("canvas_user_id") == user_id), None)
+                student_sid = roster_entry.get("student_id", "") if roster_entry else ""
+                safe_name = re.sub(r"[^\w一-鿿\-]", "_", user_name)[:40]
+                if student_sid:
+                    preferred = f"{student_sid}_{safe_name}"
+                else:
+                    preferred = f"canvas_{user_id}_{safe_name}"
 
-            local_path = canvas.download_attachment(attachment, pdf_dir, preferred)
-            if local_path and local_path.stat().st_size > 0:
-                student_pdfs.append(local_path)
-                submission_map[local_path.name] = sub
-                status = ""
-                if sub.get("late"):
-                    status += " [LATE]"
-                if sub.get("workflow_state") == "graded":
-                    status += f" [already graded: {sub.get('score')}]"
-                print(f"  [OK] {user_name} -> {local_path.name}{status}")
-            else:
-                print(f"  [FAIL] {sub['user_name']} (user {user_id}): download failed or empty file")
+                local_path = canvas.download_attachment(attachment, pdf_dir, preferred)
+                if local_path and local_path.stat().st_size > 0:
+                    student_pdfs.append(local_path)
+                    submission_map[local_path.name] = sub
+                    status = ""
+                    if sub.get("late"):
+                        status += " [LATE]"
+                    if sub.get("workflow_state") == "graded":
+                        status += f" [already graded: {sub.get('score')}]"
+                    print(f"  [OK] {user_name} -> {local_path.name}{status}")
+                else:
+                    print(f"  [FAIL] {sub['user_name']} (user {user_id}): download failed or empty file")
 
         if args.canvas_fetch_only:
             print(f"\nFetched {len(student_pdfs)} PDFs to {pdf_dir}")
             print("--canvas-fetch-only set; stopping here.")
             return 0
 
-        if not student_pdfs:
+        if not args.canvas_upload_only and not student_pdfs:
             print("No PDFs downloaded. Exiting.")
             return 0
 
         if args.max_pdfs:
             student_pdfs = student_pdfs[:args.max_pdfs]
 
-        # --- AI grading setup ---
-        # Build a fake args namespace for make_ai_backend
-        ai_args = argparse.Namespace(
-            api_key=args.api_key,
-            base_url=args.base_url,
-            model=args.model,
-            backend=args.backend,
-            render_dpi=args.render_dpi,
-            max_render_pages=args.max_render_pages,
-            chat_json_mode=not args.no_chat_json_mode,
-            trust_env=args.trust_env,
-        )
-        ai = make_ai_backend_standalone(ai_args, work_root)
-
-        # --- Extract answer key ---
+        # --- Upload-only: load existing results and skip AI entirely ---
         if args.canvas_upload_only:
-            # Load existing results from file
             results_path = output_dir / "results.json"
             if not results_path.exists():
                 raise SystemExit(f"results.json not found at {results_path}. Cannot use --canvas-upload-only.")
             results = json.loads(results_path.read_text(encoding="utf-8"))
             answer_key_path = output_dir / "answer_key.json"
-            if not answer_key_path.exists():
-                raise SystemExit(f"answer_key.json not found at {answer_key_path}. Cannot use --canvas-upload-only.")
-            answer_key = json.loads(answer_key_path.read_text(encoding="utf-8"))
+            answer_key = json.loads(answer_key_path.read_text(encoding="utf-8")) if answer_key_path.exists() else {}
             print(f"Loaded {len(results)} existing results from {results_path}")
-            # Second-pass review on existing results if requested
-            if not args.no_review_pass:
-                extra_rules_review = build_extra_scoring_rules() if not args.no_ta_scoring else ""
-                review_flagged_questions(ai, results, answer_key, extra_rules_review)
-                (output_dir / "results.json").write_text(
-                    json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
+            if results and "_score_decimals" not in results[0]:
+                results[0]["_score_decimals"] = args.score_decimals
         else:
+            # --- AI grading setup ---
+            ai_args = argparse.Namespace(
+                api_key=args.api_key,
+                base_url=args.base_url,
+                model=args.model,
+                backend=args.backend,
+                render_dpi=args.render_dpi,
+                max_render_pages=args.max_render_pages,
+                chat_json_mode=not args.no_chat_json_mode,
+                trust_env=args.trust_env,
+            )
+            ai = make_ai_backend_standalone(ai_args, work_root)
             if args.answer_key_json:
                 answer_key = json.loads(Path(args.answer_key_json).read_text(encoding="utf-8"))
             elif args.answer:
@@ -981,6 +1178,8 @@ def integrated_main(args: argparse.Namespace) -> int:
                 detect_score_outliers(results)
 
             # --- Write output files ---
+            if results:
+                results[0]["_score_decimals"] = args.score_decimals
             (output_dir / "results.json").write_text(
                 json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8"
             )
@@ -1022,11 +1221,9 @@ def integrated_main(args: argparse.Namespace) -> int:
                 continue
 
             score = result.get("total_score", 0)
-            already_graded = False
-            filename = result.get("filename", "")
 
             # Check if submission was previously graded
-            sub_info = submission_map.get(filename)
+            sub_info = submission_map.get(str(canvas_uid))
             if sub_info and sub_info.get("workflow_state") == "graded" and not args.canvas_overwrite_grades:
                 print(f"  [SKIP] {result.get('name', '')}: already graded ({sub_info.get('score')}) "
                       f"-- use --canvas-overwrite-grades to overwrite")
@@ -1139,12 +1336,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                             help="Grade and generate reports, but skip Canvas upload.")
     flow_group.add_argument("--canvas-overwrite-grades", action="store_true",
                             help="Overwrite grades for students who were already graded in Canvas.")
+    flow_group.add_argument("--canvas-ungraded-only", action="store_true",
+                            help="Only process submissions that have not been graded yet. "
+                                 "Skips already-graded students before downloading and grading.")
     flow_group.add_argument("--canvas-student-slice",
                             help="Python slice notation to select a subset of students, e.g. '0:45' for first 45, '45:90' for second 45, '45:' from 45 to end.")
     flow_group.add_argument("--no-review-pass", action="store_true",
                             help="Skip the second-pass AI review for flagged questions.")
     flow_group.add_argument("--no-ta-scoring", action="store_true",
                             help="Disable TA differentiated scoring (regular lenient -0.1/minor, bonus strict -0.5/wrong).")
+    flow_group.add_argument("--regenerate-excel", action="store_true",
+                            help="Regenerate all Excel/MD output files from existing results.json (no Canvas connection needed).")
+    flow_group.add_argument("--canvas-export-grades", action="store_true",
+                            help="Pull existing grades from Canvas and export to Excel. No AI grading performed.")
 
     # ---- Answer & input ----
     input_group = parser.add_argument_group("Answer and input")
@@ -1227,7 +1431,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         raise SystemExit("Missing --canvas-course-id or CANVAS_COURSE_ID env var.")
     if not args.canvas_assignment_id:
         raise SystemExit("Missing --canvas-assignment-id or CANVAS_ASSIGNMENT_ID env var.")
-    if not args.canvas_upload_only and not args.answer and not args.answer_key_json:
+    if not args.canvas_upload_only and not args.canvas_export_grades and not args.answer and not args.answer_key_json:
         raise SystemExit("Provide --answer or --answer-key-json for the reference answer PDF.")
 
     return args
