@@ -22,11 +22,13 @@
     - [4. Canvas 集成批改](#4-canvas-集成批改)
       - [4.1 创建配置文件](#41-创建配置文件)
       - [4.2 分步执行（推荐首次使用）](#42-分步执行推荐首次使用)
+    - [4.3 导出 Canvas 成绩表](#43-导出-canvas-成绩表)
   - [配置文件详解](#配置文件详解)
   - [命令行参数](#命令行参数)
     - [独立批改参数](#独立批改参数)
     - [Canvas 集成参数](#canvas-集成参数)
     - [流程控制参数](#流程控制参数)
+    - [成绩导出参数（`fetch_grades.py`）](#成绩导出参数fetch_gradespy)
   - [评分策略说明](#评分策略说明)
     - [1. 基础评分模式（`--grading-mode`）](#1-基础评分模式--grading-mode)
     - [2. 助教差异评分（默认启用）](#2-助教差异评分默认启用)
@@ -86,6 +88,7 @@
 |---|---|
 | `grade_homework_skill_patch.py` | 核心批改脚本，可独立运行（不依赖 Canvas） |
 | `canvas_integration.py` | Canvas LMS 集成模块，编排"获取 → 批改 → 上传"全流程 |
+| `fetch_grades.py` | 从 Canvas 抓取成绩并导出三列 Excel（学号、姓名、成绩），支持按模式筛选 |
 | `SKILL.auto-homework-grader.patch.md` | Codex Skill 配置说明（供 AI 辅助使用时参考） |
 | `grading_config.json` | Canvas 批改配置文件（需自行创建，见下） |
 | `.gitignore` | Git 忽略规则，排除 PDF / Excel / 成绩数据 |
@@ -128,7 +131,7 @@ pdftoppm -v
 **AI 批改接口**（必需）：
 
 ```powershell
-$env:AI_GRADER_API_KEY  = "sk-cwz2lcmhagp1fign9iktie730ai3bsfhreghce9tdolyya79"
+$env:AI_GRADER_API_KEY  = "xxxxx"
 $env:AI_GRADER_BASE_URL = "https://your-provider.example/api/v1"
 $env:AI_GRADER_MODEL    = "qwen"
 ```
@@ -205,6 +208,31 @@ python canvas_integration.py --config grading_config.json --canvas-dry-run-uploa
 python canvas_integration.py --config grading_config.json
 ```
 
+#### 4.3 导出 Canvas 成绩表
+
+独立脚本 `fetch_grades.py` 可以直接从 Canvas 抓取指定作业的成绩，生成简洁的三列 Excel（学号、姓名、成绩），适合存档或导入成绩系统。
+
+```powershell
+# 抓取所有选课学生（未提交或未评分的成绩列留空）
+python fetch_grades.py --config grading_config.json --mode all
+
+# 仅抓取已有成绩的学生
+python fetch_grades.py --config grading_config.json --mode graded
+
+# 仅抓取已提交作业的学生
+python fetch_grades.py --config grading_config.json --mode submitted
+```
+
+**三种抓取模式：**
+
+| 模式 | 说明 |
+|---|---|
+| `all`（默认） | 所有选课学生，未提交/未评分的成绩列留空 |
+| `graded` | 仅包含 Canvas 中已有成绩的学生 |
+| `submitted` | 仅包含已提交作业的学生（含待评分） |
+
+输出文件名格式：`canvas_grades_{作业名}.xlsx`，自动从 Canvas 获取作业名称。可通过 `--output-dir` 指定输出目录。
+
 ---
 
 ## 配置文件详解
@@ -276,6 +304,18 @@ python canvas_integration.py --config grading_config.json
 | `--canvas-overwrite-grades` | 覆盖 Canvas 中已有成绩（默认跳过已评分的） |
 | `--no-review-pass` | 跳过 AI 二次复核 |
 | `--no-ta-scoring` | 禁用助教差异评分（常规宽松/附加严格） |
+
+### 成绩导出参数（`fetch_grades.py`）
+
+| 参数 | 环境变量 | 说明 |
+| --- | --- | --- |
+| `--config` | — | JSON 配置文件路径（读取 Canvas 连接信息） |
+| `--canvas-token` | `CANVAS_API_TOKEN` | Canvas 访问令牌 |
+| `--canvas-url` | `CANVAS_BASE_URL` | API 地址（默认 `https://oc.sjtu.edu.cn/api/v1`） |
+| `--canvas-course-id` | `CANVAS_COURSE_ID` | 课程 ID |
+| `--canvas-assignment-id` | `CANVAS_ASSIGNMENT_ID` | 作业 ID |
+| `--mode` | — | 抓取模式：`all`（默认）/ `graded` / `submitted` |
+| `--output-dir` | — | 输出目录（默认当前目录） |
 
 ---
 

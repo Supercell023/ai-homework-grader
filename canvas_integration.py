@@ -332,6 +332,19 @@ class CanvasClient:
         result = resp.json() if resp.text else {}
         return result if isinstance(result, list) else [result]
 
+    # ------------------------------------------------------------------
+    # Assignment metadata
+    # ------------------------------------------------------------------
+
+    def get_assignment(
+        self,
+        course_id: int | str,
+        assignment_id: int | str,
+    ) -> dict[str, Any]:
+        """Fetch metadata for a single assignment (name, points_possible, etc.)."""
+        path = f"/courses/{course_id}/assignments/{assignment_id}"
+        return self._request("GET", path).json()
+
 
 # ---------------------------------------------------------------------------
 # Identity mapping
