@@ -57,16 +57,18 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="AI-grade PDF homework submissions and export clean grades plus detailed reports."
     )
+    parser.add_argument("--config", help="JSON config file with grading parameters. Command-line arguments override config values.")
     parser.add_argument("--input", help="Zip/folder containing both answer PDF and student PDFs, or a single student PDF when --answer is set.")
     parser.add_argument("--answer", help="Reference-answer PDF. Overrides automatic detection.")
     parser.add_argument("--submissions", "--students", "--student-pdf", dest="submissions", help="Zip, folder, or single PDF containing student submissions.")
     parser.add_argument("--roster", help="Optional .xlsx roster/template with student ID and name columns.")
-    parser.add_argument("--output-dir", default="outputs", help="Directory for generated reports.")
+    parser.add_argument("--output-dir", default="output", help="Directory for generated reports.")
     parser.add_argument("--model", default=os.getenv("AI_GRADER_MODEL", "gpt-5.1"))
     parser.add_argument("--backend", choices=["responses", "chat-vision"], default=os.getenv("AI_GRADER_BACKEND", "responses"), help="AI API mode: responses sends PDFs directly; chat-vision renders PDFs to images for OpenAI-compatible chat/vision APIs.")
     parser.add_argument("--api-key", default=os.getenv("AI_GRADER_API_KEY") or os.getenv("OPENAI_API_KEY"), help="API key. Defaults to AI_GRADER_API_KEY or OPENAI_API_KEY.")
     parser.add_argument("--base-url", default=os.getenv("AI_GRADER_BASE_URL") or os.getenv("OPENAI_BASE_URL"), help="Optional OpenAI-compatible API base URL, usually ending in /v1.")
     parser.add_argument("--api-timeout", type=float, default=float(os.getenv("AI_GRADER_API_TIMEOUT", "120")), help="AI API request timeout in seconds.")
+    parser.add_argument("--api-max-retries", type=int, default=int(os.getenv("AI_GRADER_API_MAX_RETRIES", "0")), help="OpenAI SDK automatic retry count. Default 0 avoids long retry stalls.")
     parser.add_argument("--render-dpi", type=int, default=160, help="PDF render DPI for --backend chat-vision.")
     parser.add_argument("--max-render-pages", type=int, default=12, help="Maximum PDF pages rendered for --backend chat-vision.")
     parser.add_argument("--render-timeout", type=float, default=float(os.getenv("AI_GRADER_RENDER_TIMEOUT", "120")), help="pdftoppm PDF rendering timeout in seconds.")
@@ -96,12 +98,33 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-trust-env", action="store_false", dest="trust_env", help="Ignore proxy and TLS environment settings in the HTTP client.")
     parser.set_defaults(trust_env=env_bool("AI_GRADER_TRUST_ENV"))
     args = parser.parse_args()
+
+    if args.config:
+        config_path = Path(args.config).expanduser().resolve()
+        if not config_path.exists():
+            raise SystemExit(f"Config file not found: {config_path}")
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        for key, value in config.items():
+            attr = key.replace("-", "_")
+            if not hasattr(args, attr):
+                continue
+            current = getattr(args, attr)
+            default = parser.get_default(attr)
+            if isinstance(value, str) and (current is None or current == "" or current == default):
+                setattr(args, attr, value)
+            elif isinstance(value, bool) and current == default:
+                setattr(args, attr, value)
+            elif isinstance(value, (int, float)) and current == default:
+                setattr(args, attr, value)
+
     if args.max_workers < 1:
         raise SystemExit("--max-workers must be >= 1.")
     if args.requests_per_minute < 0:
         raise SystemExit("--requests-per-minute must be >= 0.")
     if args.api_timeout <= 0:
         raise SystemExit("--api-timeout must be > 0.")
+    if args.api_max_retries < 0:
+        raise SystemExit("--api-max-retries must be >= 0.")
     if args.render_timeout <= 0:
         raise SystemExit("--render-timeout must be > 0.")
     return args
@@ -185,8 +208,6 @@ def discover_inputs(args: argparse.Namespace, work_root: Path) -> tuple[Path, li
 
     if not answer_pdf:
         raise SystemExit("Reference-answer PDF was not provided or detected.")
-    if args.max_pdfs:
-        student_pdfs = student_pdfs[: args.max_pdfs]
     if not student_pdfs:
         raise SystemExit("No student PDF submissions found.")
     return answer_pdf, student_pdfs
@@ -236,6 +257,58 @@ def is_chat_json_mode_unsupported(exc: Exception) -> bool:
         ("response_format" in message or "json_object" in message or "json mode" in message)
         and ("unsupported" in message or "not support" in message or "invalid" in message or "400" in message)
     )
+
+
+def classify_error(message: Any, stage: str = "") -> str:
+    text = "" if message is None else str(message).strip().lower()
+    stage_text = "" if stage is None else str(stage).strip().lower()
+    if "timed out" in text or "timeout" in text:
+        return "timeout"
+    if "rate limit" in text or "too many requests" in text or re.search(r"\b429\b", text):
+        return "rate_limit"
+    if "service is temporarily unavailable" in text or "temporarily unavailable" in text:
+        return "server_unavailable"
+    if "internalservererror" in text or "internal server error" in text or "error code: 500" in text or re.search(r"\b500\b", text):
+        return "server_unavailable"
+    if "badrequest" in text or "bad request" in text or "error code: 400" in text or re.search(r"\b400\b", text):
+        return "bad_request"
+    if "json" in text and ("decode" in text or "parse" in text or "no json" in text):
+        return "json_parse"
+    if stage_text == "render" or "pdftoppm" in text or "render" in text:
+        return "render_failed"
+    if not text:
+        return ""
+    return "unknown"
+
+
+def redact_sensitive_text(value: Any) -> str:
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return ""
+    text = re.sub(
+        r"(api[_-]?key['\"]?\s*[:=]\s*)['\"]?([A-Za-z0-9._-]{12,})['\"]?",
+        r"\1[REDACTED]",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(
+        r"(authorization['\"]?\s*[:=]\s*bearer\s+)([A-Za-z0-9._-]{12,})",
+        r"\1[REDACTED]",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(r"\b(sk-[A-Za-z0-9_-]{8,})\b", "[REDACTED]", text)
+    return text
+
+
+def sanitize_for_output(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_sensitive_text(value)
+    if isinstance(value, list):
+        return [sanitize_for_output(item) for item in value]
+    if isinstance(value, dict):
+        return {key: sanitize_for_output(item) for key, item in value.items()}
+    return value
 
 
 def render_pdf_pages(pdf_path: Path, work_root: Path, dpi: int, max_pages: int, timeout_seconds: float) -> list[Path]:
@@ -387,6 +460,27 @@ class AIBackend:
         self.render_timeout = render_timeout
         self.chat_json_mode = chat_json_mode
         self.verbose = verbose
+        self._diagnostics = threading.local()
+
+    def begin_diagnostics(self, filename: str) -> None:
+        self._diagnostics.current = {
+            "filename": filename,
+            "render_seconds": None,
+            "rendered_pages": None,
+            "api_seconds": None,
+            "fallback_retry": False,
+            "error_stage": "",
+            "error": "",
+        }
+
+    def update_diagnostics(self, **values: Any) -> None:
+        current = getattr(self._diagnostics, "current", None)
+        if isinstance(current, dict):
+            current.update(values)
+
+    def get_diagnostics(self) -> dict[str, Any]:
+        current = getattr(self._diagnostics, "current", None)
+        return dict(current) if isinstance(current, dict) else {}
 
     def json_from_pdf(self, pdf_path: Path, prompt: str, schema_name: str, schema: dict[str, Any]) -> dict[str, Any]:
         if self.backend == "responses":
@@ -394,18 +488,24 @@ class AIBackend:
             if self.verbose:
                 print(f"  [{pdf_path.name}] sending PDF to AI responses API...", flush=True)
             content = [file_to_input_file(pdf_path), {"type": "input_text", "text": prompt.strip()}]
-            response = self.client.responses.create(
-                model=self.model,
-                input=[{"role": "user", "content": content}],
-                text={
-                    "format": {
-                        "type": "json_schema",
-                        "name": schema_name,
-                        "strict": True,
-                        "schema": schema,
-                    }
-                },
-            )
+            try:
+                response = self.client.responses.create(
+                    model=self.model,
+                    input=[{"role": "user", "content": content}],
+                    text={
+                        "format": {
+                            "type": "json_schema",
+                            "name": schema_name,
+                            "strict": True,
+                            "schema": schema,
+                        }
+                    },
+                )
+            except Exception as exc:
+                error_message = redact_sensitive_text(exc)
+                self.update_diagnostics(error_stage="api", error=error_message, error_type=classify_error(error_message, "api"))
+                raise
+            self.update_diagnostics(api_seconds=round(time.monotonic() - start, 2))
             if self.verbose:
                 print(f"  [{pdf_path.name}] AI response received in {time.monotonic() - start:.1f}s", flush=True)
             return json.loads(response.output_text)
@@ -414,7 +514,21 @@ class AIBackend:
             render_start = time.monotonic()
             if self.verbose:
                 print(f"  [{pdf_path.name}] rendering PDF pages...", flush=True)
-            images = render_pdf_pages(pdf_path, self.work_root, self.render_dpi, self.max_render_pages, self.render_timeout)
+            try:
+                images = render_pdf_pages(pdf_path, self.work_root, self.render_dpi, self.max_render_pages, self.render_timeout)
+            except Exception as exc:
+                error_message = redact_sensitive_text(exc)
+                self.update_diagnostics(
+                    render_seconds=round(time.monotonic() - render_start, 2),
+                    error_stage="render",
+                    error=error_message,
+                    error_type=classify_error(error_message, "render"),
+                )
+                raise
+            self.update_diagnostics(
+                render_seconds=round(time.monotonic() - render_start, 2),
+                rendered_pages=len(images),
+            )
             if self.verbose:
                 print(f"  [{pdf_path.name}] rendered {len(images)} page image(s) in {time.monotonic() - render_start:.1f}s", flush=True)
             schema_text = json.dumps(schema, ensure_ascii=False)
@@ -443,11 +557,31 @@ class AIBackend:
                 completion = self.client.chat.completions.create(**kwargs)
             except Exception as exc:
                 if not self.chat_json_mode or not is_chat_json_mode_unsupported(exc):
-                    print(f"  [{pdf_path.name}] AI request failed: {exc}", flush=True)
+                    error_message = redact_sensitive_text(exc)
+                    self.update_diagnostics(
+                        api_seconds=round(time.monotonic() - request_start, 2),
+                        error_stage="api",
+                        error=error_message,
+                        error_type=classify_error(error_message, "api"),
+                    )
+                    print(f"  [{pdf_path.name}] AI request failed: {error_message}", flush=True)
                     raise
                 print(f"  [{pdf_path.name}] chat JSON mode unsupported; retrying without response_format...", flush=True)
                 kwargs.pop("response_format", None)
-                completion = self.client.chat.completions.create(**kwargs)
+                self.update_diagnostics(fallback_retry=True)
+                try:
+                    completion = self.client.chat.completions.create(**kwargs)
+                except Exception as retry_exc:
+                    error_message = redact_sensitive_text(retry_exc)
+                    self.update_diagnostics(
+                        api_seconds=round(time.monotonic() - request_start, 2),
+                        error_stage="api",
+                        error=error_message,
+                        error_type=classify_error(error_message, "api"),
+                    )
+                    print(f"  [{pdf_path.name}] AI request failed: {error_message}", flush=True)
+                    raise
+            self.update_diagnostics(api_seconds=round(time.monotonic() - request_start, 2))
             if self.verbose:
                 print(f"  [{pdf_path.name}] AI response received in {time.monotonic() - request_start:.1f}s", flush=True)
             text = completion.choices[0].message.content or "{}"
@@ -479,6 +613,7 @@ def make_ai_backend(args: argparse.Namespace, work_root: Path) -> AIBackend:
     client_kwargs: dict[str, Any] = {"api_key": args.api_key}
     if args.base_url:
         client_kwargs["base_url"] = args.base_url
+    client_kwargs["max_retries"] = int(args.api_max_retries)
     trust_env = args.trust_env
     if trust_env is None:
         trust_env = False if args.base_url else True
@@ -1155,6 +1290,7 @@ def normalize_result(
 
 def error_result(pdf: Path, message: str, answer_key: dict[str, Any]) -> dict[str, Any]:
     sid, name = filename_identity(pdf.name)
+    message = redact_sensitive_text(message)
     return {
         "student_id": sid,
         "name": name,
@@ -1217,7 +1353,7 @@ def load_existing_results(output_dir: Path) -> dict[str, dict[str, Any]]:
             continue
         for result in data:
             if isinstance(result, dict) and is_reusable_result(result):
-                existing[str(result.get("filename", ""))] = result
+                existing[str(result.get("filename", ""))] = sanitize_for_output(result)
     return existing
 
 
@@ -1279,11 +1415,11 @@ def write_details_xlsx(path: Path, results: list[dict[str, Any]]) -> None:
                 result.get("bonus_score", ""),
                 result.get("max_score", ""),
                 "是" if result.get("needs_review") else "否",
-                "; ".join(result.get("review_reasons", [])),
+                redact_sensitive_text("; ".join(result.get("review_reasons", []))),
                 result.get("answer_quality", ""),
                 result.get("recognition_confidence", ""),
                 result.get("grading_confidence", ""),
-                result.get("overall_feedback", ""),
+                redact_sensitive_text(result.get("overall_feedback", "")),
             ]
         )
 
@@ -1318,9 +1454,9 @@ def write_details_xlsx(path: Path, results: list[dict[str, Any]]) -> None:
                     "是" if question.get("found") else "否",
                     question.get("confidence", ""),
                     "是" if question.get("needs_review") else "否",
-                    question.get("review_reason", ""),
-                    question.get("evidence", ""),
-                    question.get("feedback", ""),
+                    redact_sensitive_text(question.get("review_reason", "")),
+                    redact_sensitive_text(question.get("evidence", "")),
+                    redact_sensitive_text(question.get("feedback", "")),
                 ]
             )
     write_xlsx(path, [("Summary", summary), ("QuestionDetails", question_sheet)])
@@ -1336,7 +1472,7 @@ def write_review_xlsx(path: Path, results: list[dict[str, Any]]) -> None:
                     result.get("name", ""),
                     result.get("filename", ""),
                     result.get("total_score", ""),
-                    "; ".join(result.get("review_reasons", [])),
+                    redact_sensitive_text("; ".join(result.get("review_reasons", []))),
                 ]
             )
     write_xlsx(path, [("ReviewNeeded", rows)])
@@ -1359,8 +1495,8 @@ def write_details_md(path: Path, answer_key: dict[str, Any], results: list[dict[
                 f"- 文件：{result.get('filename', '')}",
                 f"- 总分：{result.get('total_score', '')} / {result.get('max_score', '')}",
                 f"- 需复核：{review}",
-                f"- 复核原因：{'; '.join(result.get('review_reasons', [])) or '无'}",
-                f"- 总体反馈：{result.get('overall_feedback', '')}",
+                f"- 复核原因：{redact_sensitive_text('; '.join(result.get('review_reasons', []))) or '无'}",
+                f"- 总体反馈：{redact_sensitive_text(result.get('overall_feedback', ''))}",
                 "",
             ]
         )
@@ -1371,9 +1507,9 @@ def write_details_md(path: Path, answer_key: dict[str, Any], results: list[dict[
                     "",
                     f"- 得分：{question.get('score', '')} / {question.get('max_points', '')}",
                     f"- 置信度：{question.get('confidence', '')}",
-                    f"- 证据：{question.get('evidence', '')}",
-                    f"- 反馈：{question.get('feedback', '')}",
-                    f"- 复核：{question.get('review_reason', '') or '无'}",
+                    f"- 证据：{redact_sensitive_text(question.get('evidence', ''))}",
+                    f"- 反馈：{redact_sensitive_text(question.get('feedback', ''))}",
+                    f"- 复核：{redact_sensitive_text(question.get('review_reason', '')) or '无'}",
                     "",
                 ]
             )
@@ -1516,8 +1652,86 @@ def write_rate_analysis_files(
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def write_submission_diagnostics(
+    output_dir: Path,
+    results: list[dict[str, Any]],
+    write_json: bool = False,
+) -> None:
+    rows = []
+    for result in results:
+        diagnostics = result.get("_diagnostics") or {}
+        if not diagnostics:
+            continue
+        rows.append(
+            {
+                "filename": result.get("filename", ""),
+                "status": diagnostics.get("status", "ok"),
+                "total_seconds": diagnostics.get("total_seconds"),
+                "render_seconds": diagnostics.get("render_seconds"),
+                "rendered_pages": diagnostics.get("rendered_pages"),
+                "api_seconds": diagnostics.get("api_seconds"),
+                "fallback_retry": diagnostics.get("fallback_retry", False),
+                "error_stage": diagnostics.get("error_stage", ""),
+                "error_type": diagnostics.get("error_type", ""),
+                "error": redact_sensitive_text(diagnostics.get("error", "")),
+                "answer_quality": result.get("answer_quality", ""),
+                "needs_review": bool(result.get("needs_review", False)),
+            }
+        )
+
+    json_path = output_dir / "作业耗时诊断.json"
+    md_path = output_dir / "作业耗时诊断.md"
+    if write_json:
+        json_path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+    elif json_path.exists():
+        json_path.unlink()
+
+    lines = ["# 作业耗时诊断", ""]
+    if not rows:
+        lines.append("本次没有新的逐份作业诊断记录；可能全部结果都来自续跑缓存。")
+        md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return
+
+    slow_rows = sorted(rows, key=lambda row: float(row.get("total_seconds") or 0), reverse=True)
+    lines.extend(
+        [
+            "## 最慢作业",
+            "",
+            "| 文件 | 状态 | 总耗时 | 渲染 | 页数 | AI请求 | 错误类型/问题 |",
+            "|---|---:|---:|---:|---:|---:|---|",
+        ]
+    )
+    for row in slow_rows[:10]:
+        error = cell_text(row.get("error", ""))
+        if len(error) > 80:
+            error = error[:77] + "..."
+        issue = cell_text(row.get("error_type", "")) or error
+        if issue and error and issue != error:
+            issue = f"{issue}: {error}"
+        lines.append(
+            "| {filename} | {status} | {total}s | {render}s | {pages} | {api}s | {error} |".format(
+                filename=cell_text(row.get("filename", "")),
+                status=cell_text(row.get("status", "")),
+                total=row.get("total_seconds", ""),
+                render=row.get("render_seconds", ""),
+                pages=row.get("rendered_pages", ""),
+                api=row.get("api_seconds", ""),
+                error=issue,
+            )
+        )
+
+    failure_rows = [row for row in rows if row.get("status") == "failed" or row.get("error")]
+    if failure_rows:
+        lines.extend(["", "## 失败/异常", ""])
+        for row in failure_rows:
+            error_type = row.get("error_type") or "unknown"
+            lines.append(f"- {row.get('filename', '')}: {error_type} ({row.get('error_stage') or 'unknown'}) - {redact_sensitive_text(row.get('error') or 'no error message')}")
+
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def clean_compact_output_files(output_dir: Path) -> None:
-    for name in ("批改详情.md", "班级分析.md", "partial_results.json", "AI请求速率分析.json"):
+    for name in ("批改详情.md", "班级分析.md", "partial_results.json", "AI请求速率分析.json", "作业耗时诊断.json"):
         path = output_dir / name
         if path.exists():
             try:
@@ -1553,6 +1767,7 @@ def run_grading_pipeline(
     max_workers: int = 1,
     rate_limiter: ApiRateLimiter | None = None,
     existing_results: dict[str, dict[str, Any]] | None = None,
+    max_new_pdfs: int | None = None,
 ) -> list[dict[str, Any]]:
     """Grade a list of student PDFs and return normalized results.
 
@@ -1560,7 +1775,6 @@ def run_grading_pipeline(
     after each student so that interrupted runs can be resumed.
     """
     total_pdfs = len(student_pdfs)
-    worker_count = max(1, min(int(max_workers or 1), total_pdfs or 1))
     results_by_index: list[dict[str, Any] | None] = [None] * total_pdfs
     pending: list[tuple[int, Path]] = []
     existing_results = existing_results or {}
@@ -1570,34 +1784,66 @@ def run_grading_pipeline(
             results_by_index[index] = reusable
         else:
             pending.append((index, pdf))
-    reused_count = total_pdfs - len(pending)
+    reusable_count = sum(1 for result in results_by_index if result is not None)
+    if max_new_pdfs:
+        deferred = pending[max_new_pdfs:]
+        pending = pending[:max_new_pdfs]
+        if deferred:
+            print(f"Batch limit: grading {len(pending)} pending submission(s); {len(deferred)} pending left for later runs.")
+    active_indices = {index for index, _ in pending}
+    active_indices.update(index for index, result in enumerate(results_by_index) if result is not None)
+    active_total = len(active_indices)
+    reused_count = reusable_count
+    worker_count = max(1, min(int(max_workers or 1), len(pending) or 1))
     started_at = time.monotonic()
 
-    def print_progress(completed: int, newly_completed: int, pdf_name: str) -> None:
+    def print_progress(completed: int, newly_completed: int, pdf_name: str, result: dict[str, Any]) -> None:
         elapsed = time.monotonic() - started_at
         avg = elapsed / newly_completed if newly_completed else 0.0
-        remaining = max(0, total_pdfs - completed)
+        remaining = max(0, active_total - completed)
         eta = avg * remaining
+        diagnostics = result.get("_diagnostics") or {}
+        total_seconds = diagnostics.get("total_seconds")
+        status = "review" if result.get("needs_review") else "ok"
+        if result.get("answer_quality") == "unreadable" or diagnostics.get("error"):
+            status = "failed"
+        last = f" | last {float(total_seconds):.1f}s" if isinstance(total_seconds, (int, float)) else ""
         print(
-            f"[{completed}/{total_pdfs}] completed {pdf_name} | "
-            f"elapsed {format_duration(elapsed)} | avg {avg:.1f}s/submission | ETA {format_duration(eta)}",
+            f"[{completed}/{active_total}] completed {pdf_name} | "
+            f"status {status}{last} | elapsed {format_duration(elapsed)} | "
+            f"avg {avg:.1f}s/submission | ETA {format_duration(eta)}",
             flush=True,
         )
 
     def grade_one(index: int, pdf: Path) -> tuple[int, dict[str, Any]]:
+        item_started_at = time.monotonic()
+        if hasattr(ai, "begin_diagnostics"):
+            ai.begin_diagnostics(pdf.name)
         try:
             if rate_limiter:
                 rate_limiter.wait("grading")
             raw_result = grade_student_pdf(ai, pdf, answer_key, regular_points, bonus_points, grading_mode, extra_scoring_rules)
             result = normalize_result(raw_result, answer_key, roster, review_threshold, score_decimals, review_zero_scores)
         except Exception as exc:
-            result = normalize_result(error_result(pdf, str(exc), answer_key), answer_key, roster, review_threshold, score_decimals, review_zero_scores)
+            result = normalize_result(error_result(pdf, redact_sensitive_text(exc), answer_key), answer_key, roster, review_threshold, score_decimals, review_zero_scores)
+        diagnostics = ai.get_diagnostics() if hasattr(ai, "get_diagnostics") else {}
+        if result.get("answer_quality") == "unreadable" and not diagnostics.get("error"):
+            diagnostics["error"] = redact_sensitive_text("; ".join(result.get("review_reasons", [])))
+        if diagnostics.get("error") and not diagnostics.get("error_type"):
+            diagnostics["error_type"] = classify_error(diagnostics.get("error"), diagnostics.get("error_stage", ""))
+        if diagnostics.get("error"):
+            diagnostics["error"] = redact_sensitive_text(diagnostics.get("error"))
+        diagnostics["total_seconds"] = round(time.monotonic() - item_started_at, 2)
+        diagnostics["status"] = "failed" if result.get("answer_quality") == "unreadable" or diagnostics.get("error") else "ok"
+        diagnostics["answer_quality"] = result.get("answer_quality", "")
+        diagnostics["needs_review"] = bool(result.get("needs_review", False))
+        result["_diagnostics"] = diagnostics
         return index, result
 
     def write_partial() -> None:
         completed = [result for result in results_by_index if result is not None]
         (output_dir / "partial_results.json").write_text(
-            json.dumps(completed, ensure_ascii=False, indent=2),
+            json.dumps(sanitize_for_output(completed), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
@@ -1605,7 +1851,7 @@ def run_grading_pipeline(
         print(f"Resuming from existing results: skipped {reused_count}, grading {len(pending)} remaining.")
         write_partial()
     if not pending:
-        print(f"All {total_pdfs} submissions already have reusable results.")
+        print(f"All selected submissions already have reusable results.")
     elif worker_count == 1:
         print(f"Grading {len(pending)} remaining submission(s)...")
         for index, pdf in pending:
@@ -1613,7 +1859,7 @@ def run_grading_pipeline(
             results_by_index[result_index] = result
             write_partial()
             completed = sum(1 for item in results_by_index if item is not None)
-            print_progress(completed, completed - reused_count, pdf.name)
+            print_progress(completed, completed - reused_count, pdf.name, result)
     else:
         print(f"Grading {len(pending)} remaining submission(s) with {worker_count} worker(s)...")
         executor = ThreadPoolExecutor(max_workers=worker_count)
@@ -1628,7 +1874,7 @@ def run_grading_pipeline(
                 results_by_index[result_index] = result
                 write_partial()
                 completed = sum(1 for item in results_by_index if item is not None)
-                print_progress(completed, completed - reused_count, student_pdfs[result_index].name)
+                print_progress(completed, completed - reused_count, student_pdfs[result_index].name, result)
         except KeyboardInterrupt:
             print("\nInterrupted; cancelling pending grading tasks. In-flight API/render calls may return after their timeout.", flush=True)
             for future in futures:
@@ -1638,7 +1884,11 @@ def run_grading_pipeline(
         else:
             executor.shutdown(wait=True)
 
-    missing = [student_pdfs[index].name for index, result in enumerate(results_by_index) if result is None]
+    missing = [
+        student_pdfs[index].name
+        for index in active_indices
+        if results_by_index[index] is None
+    ]
     if missing:
         raise RuntimeError(f"Internal error: missing grading results for: {', '.join(missing)}")
     return [result for result in results_by_index if result is not None]
@@ -1657,6 +1907,8 @@ def main() -> int:
         print(f"Student submissions discovered: {len(student_pdfs)}")
         print(f"Output directory: {output_dir}")
         print(f"Backend/model: {args.backend}/{args.model}")
+        if args.max_pdfs:
+            print(f"Batch limit: up to {args.max_pdfs} new submission(s) this run")
         if args.max_workers > 1:
             print(f"Parallel workers: {args.max_workers}")
 
@@ -1705,10 +1957,12 @@ def main() -> int:
             max_workers=args.max_workers,
             rate_limiter=rate_limiter,
             existing_results=existing_results,
+            max_new_pdfs=args.max_pdfs,
         )
 
         if results:
             results[0]["_score_decimals"] = args.score_decimals
+        results = sanitize_for_output(results)
         (output_dir / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
         write_clean_grades(output_dir / "总成绩_三列表.xlsx", results, roster, args.blank_review_scores)
         write_details_xlsx(output_dir / "批改明细.xlsx", results)
@@ -1727,6 +1981,7 @@ def main() -> int:
         else:
             clean_compact_output_files(output_dir)
         write_rate_analysis_files(output_dir, rate_limiter, run_started_at, write_json=args.output_profile == "full")
+        write_submission_diagnostics(output_dir, results, write_json=args.output_profile == "full")
 
         print("\nDone.")
         print(f"Clean grade workbook: {output_dir / '总成绩_三列表.xlsx'}")
@@ -1736,6 +1991,7 @@ def main() -> int:
             print(f"Details Markdown: {output_dir / '批改详情.md'}")
             print(f"Class analysis: {output_dir / '班级分析.md'}")
         print(f"AI request rate analysis: {output_dir / 'AI请求速率分析.md'}")
+        print(f"Submission timing diagnostics: {output_dir / '作业耗时诊断.md'}")
         return 0
     finally:
         if args.keep_workdir:

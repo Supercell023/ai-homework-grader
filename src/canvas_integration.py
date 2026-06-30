@@ -6,19 +6,19 @@ existing AI grading pipeline, and uploads scores + feedback comments back.
 
 Usage:
   # Full pipeline: fetch -> grade -> upload
-  python canvas_integration.py --config grading_config.json
+  python src/canvas_integration.py --config setting/run_config.json
 
   # Fetch submissions only (verify downloads work)
-  python canvas_integration.py --config grading_config.json --canvas-fetch-only
+  python src/canvas_integration.py --config setting/run_config.json --canvas-fetch-only
 
   # Grade but don't upload (review before publishing)
-  python canvas_integration.py --config grading_config.json --canvas-skip-upload
+  python src/canvas_integration.py --config setting/run_config.json --canvas-skip-upload
 
   # Upload from existing results.json (re-upload after fixing)
-  python canvas_integration.py --config grading_config.json --canvas-upload-only
+  python src/canvas_integration.py --config setting/run_config.json --canvas-upload-only
 
   # Preview what would be uploaded without actually sending
-  python canvas_integration.py --config grading_config.json --canvas-dry-run-upload
+  python src/canvas_integration.py --config setting/run_config.json --canvas-dry-run-upload
 """
 
 from __future__ import annotations
@@ -54,12 +54,14 @@ from grade_homework_skill_patch import (
     normalize_result,
     read_roster,
     run_grading_pipeline,
+    sanitize_for_output,
     write_class_analysis_md,
     clean_compact_output_files,
     write_clean_grades,
     write_details_md,
     write_details_xlsx,
     write_rate_analysis_files,
+    write_submission_diagnostics,
     write_review_xlsx,
 )
 
@@ -810,7 +812,7 @@ def _regenerate_output_files(output_dir: Path, args: argparse.Namespace) -> int:
     if not answer_key_path.exists():
         raise SystemExit(f"answer_key.json not found at {answer_key_path}")
 
-    results = json.loads(results_path.read_text(encoding="utf-8"))
+    results = sanitize_for_output(json.loads(results_path.read_text(encoding="utf-8")))
     answer_key = json.loads(answer_key_path.read_text(encoding="utf-8"))
     local_roster = read_roster(args.roster) if args.roster else None
 
@@ -830,6 +832,7 @@ def _regenerate_output_files(output_dir: Path, args: argparse.Namespace) -> int:
             ai_args = argparse.Namespace(
                 api_key=args.api_key, base_url=args.base_url, model=args.model,
                 backend=args.backend, api_timeout=args.api_timeout,
+                api_max_retries=args.api_max_retries,
                 render_dpi=args.render_dpi, max_render_pages=args.max_render_pages,
                 render_timeout=args.render_timeout,
                 chat_json_mode=not args.no_chat_json_mode, trust_env=args.trust_env,
@@ -1123,15 +1126,12 @@ def integrated_main(args: argparse.Namespace) -> int:
             print("No PDFs downloaded. Exiting.")
             return 0
 
-        if args.max_pdfs:
-            student_pdfs = student_pdfs[:args.max_pdfs]
-
         # --- Upload-only: load existing results and skip AI entirely ---
         if args.canvas_upload_only:
             results_path = output_dir / "results.json"
             if not results_path.exists():
                 raise SystemExit(f"results.json not found at {results_path}. Cannot use --canvas-upload-only.")
-            results = json.loads(results_path.read_text(encoding="utf-8"))
+            results = sanitize_for_output(json.loads(results_path.read_text(encoding="utf-8")))
             answer_key_path = output_dir / "answer_key.json"
             answer_key = json.loads(answer_key_path.read_text(encoding="utf-8")) if answer_key_path.exists() else {}
             print(f"Loaded {len(results)} existing results from {results_path}")
@@ -1145,6 +1145,7 @@ def integrated_main(args: argparse.Namespace) -> int:
                 model=args.model,
                 backend=args.backend,
                 api_timeout=args.api_timeout,
+                api_max_retries=args.api_max_retries,
                 render_dpi=args.render_dpi,
                 max_render_pages=args.max_render_pages,
                 render_timeout=args.render_timeout,
@@ -1205,6 +1206,7 @@ def integrated_main(args: argparse.Namespace) -> int:
                 max_workers=args.max_workers,
                 rate_limiter=rate_limiter,
                 existing_results=existing_results,
+                max_new_pdfs=args.max_pdfs,
             )
 
             # --- Second-pass AI review for flagged questions ---
@@ -1228,6 +1230,7 @@ def integrated_main(args: argparse.Namespace) -> int:
             # --- Write output files ---
             if results:
                 results[0]["_score_decimals"] = args.score_decimals
+            results = sanitize_for_output(results)
             (output_dir / "results.json").write_text(
                 json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8"
             )
@@ -1255,6 +1258,7 @@ def integrated_main(args: argparse.Namespace) -> int:
                 run_started_at,
                 write_json=args.output_profile == "full",
             )
+            write_submission_diagnostics(output_dir, results, write_json=args.output_profile == "full")
 
         # --- Upload grades to Canvas ---
         if args.canvas_skip_upload:
@@ -1339,6 +1343,7 @@ def make_ai_backend_standalone(args: argparse.Namespace, work_root: Path) -> AIB
     client_kwargs: dict[str, Any] = {"api_key": args.api_key}
     if args.base_url:
         client_kwargs["base_url"] = args.base_url
+    client_kwargs["max_retries"] = int(getattr(args, "api_max_retries", 0))
 
     trust_env = args.trust_env
     # Honor env var AI_GRADER_TRUST_ENV if trust_env not explicitly set
@@ -1426,6 +1431,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ai_group.add_argument("--api-key", default=os.getenv("AI_GRADER_API_KEY") or os.getenv("OPENAI_API_KEY"))
     ai_group.add_argument("--base-url", default=os.getenv("AI_GRADER_BASE_URL") or os.getenv("OPENAI_BASE_URL"))
     ai_group.add_argument("--api-timeout", type=float, default=float(os.getenv("AI_GRADER_API_TIMEOUT", "120")))
+    ai_group.add_argument("--api-max-retries", type=int, default=int(os.getenv("AI_GRADER_API_MAX_RETRIES", "0")),
+                          help="OpenAI SDK automatic retry count. Default 0 avoids long retry stalls.")
 
     # ---- Scoring ----
     score_group = parser.add_argument_group("Scoring")
@@ -1452,7 +1459,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     # ---- Analysis & output ----
     out_group = parser.add_argument_group("Output")
-    out_group.add_argument("--output-dir", default="outputs")
+    out_group.add_argument("--output-dir", default="output")
     out_group.add_argument("--no-ai-analysis", action="store_true")
     out_group.add_argument("--analysis-max-students", type=int, default=120)
     out_group.add_argument("--max-pdfs", type=int, help="Limit number of PDFs to process (for testing).")
@@ -1515,6 +1522,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         raise SystemExit("--requests-per-minute must be >= 0.")
     if args.api_timeout <= 0:
         raise SystemExit("--api-timeout must be > 0.")
+    if args.api_max_retries < 0:
+        raise SystemExit("--api-max-retries must be >= 0.")
     if args.render_timeout <= 0:
         raise SystemExit("--render-timeout must be > 0.")
 

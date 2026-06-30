@@ -2,6 +2,7 @@
 *.pdf
 *.zip
 grading_output*/
+output/
 outputs/
 __pycache__/
 *.pyc
@@ -9,15 +10,18 @@ __pycache__/
 # API keys & credentials
 .env
 api_env.sh
+setting/api_env.sh
 *.key
 
 # Excel grade files (contain student names/IDs/scores)
 *.xlsx
 
-# Local submissions, course data, and generated jobs
+# Local submissions, course data, and personal configs
 homework/
-job/
 answers/
+job/
+setting/run_config.json
+setting/grading_config.json
 
 # OS files
 .DS_Store
