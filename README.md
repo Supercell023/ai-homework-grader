@@ -254,6 +254,9 @@ python fetch_grades.py --config grading_config.json --mode submitted
 | `blank_review_scores` | bool | 需复核的学生成绩留空（默认 true） |
 | `canvas_student_slice` | string | Python 切片，如 `"0:45"` 批改前 45 人 |
 | `max_pdfs` | int | 最多批改人数限制 |
+| `max_workers` | int | 并发批改 worker 数，默认 1 |
+| `requests_per_minute` | float | AI 请求总速率上限，0 表示不限制 |
+| `refresh_answer_key` | bool | 忽略已有 `answer_key.json` 并重新抽取参考答案 |
 | `output_dir` | string | 输出目录路径 |
 | `roster` | string/null | 本地花名册 xlsx 路径（用于补充 Canvas 缺失的学号） |
 
@@ -273,11 +276,19 @@ python fetch_grades.py --config grading_config.json --mode submitted
 | `--grading-mode` | `standard` / `lenient` / `strict` |
 | `--backend` | `chat-vision`（推荐）/ `responses` |
 | `--model` | 模型名称 |
+| `--api-timeout` | AI API 单次请求超时秒数（默认 120） |
+| `--render-timeout` | PDF 渲染单文件超时秒数（默认 120） |
 | `--review-threshold` | 复核置信度阈值（默认 0.75） |
 | `--score-decimals` | 上传成绩小数位数（默认 2） |
 | `--blank-review-scores` | 需复核的学生成绩留空 |
 | `--max-pdfs` | 限制批改人数 |
+| `--max-workers` | 并发批改 worker 数，默认 1 |
+| `--requests-per-minute` | AI 请求总速率上限，0 表示不限制 |
+| `--refresh-answer-key` | 忽略已有 `answer_key.json` 并重新抽取参考答案 |
+| `--output-profile` | 输出模式：`compact`（默认）/ `full` |
+| `--no-resume` | 不复用已有结果，强制重新批改全部提交 |
 | `--dry-run-discover` | 仅检查文件识别，不调用 AI |
+| `--verbose` | 显示逐文件渲染/API 调试日志 |
 | `--no-ai-analysis` | 跳过 AI 班级分析 |
 | `--no-trust-env` | 绕过系统代理（校园网常见问题） |
 
@@ -410,18 +421,27 @@ Canvas 采用漏桶算法限流。脚本内置了：
 
 ## 输出文件
 
-批改完成后，输出目录包含以下文件：
+批改完成后，默认 `compact` 输出包含以下文件：
 
 | 文件 | 内容 |
 |---|---|
 | `总成绩_三列表.xlsx` | 学号、姓名、成绩——适合直接上传成绩系统 |
 | `批改明细.xlsx` | 每题得分/满分、置信度、逐题反馈、复核标记 |
 | `人工复核.xlsx` | 需要人工检查的学生名单和原因 |
+| `answer_key.json` | AI 抽取的参考答案结构化数据 |
+| `answer_key_meta.json` | 参考答案 PDF 指纹和配分参数，用于判断缓存是否可复用 |
+| `AI请求速率分析.md` | AI 请求次数、平均速率和限流等待统计 |
+| `results.json` | 完整的结构化批改结果 |
+
+运行中会实时写入 `partial_results.json` 作为中断备份；`compact` 模式正常完成后会删除它，下一次续跑使用 `results.json`。
+
+加 `--output-profile full` 时额外生成：
+
+| 文件 | 内容 |
+|---|---|
 | `批改详情.md` | 面向助教的详细批改报告 |
 | `班级分析.md` | 班级整体表现与常见问题分析 |
-| `answer_key.json` | AI 抽取的参考答案结构化数据 |
-| `results.json` | 完整的结构化批改结果 |
-| `partial_results.json` | 批改进度备份（每批完一个学生实时写入） |
+| `AI请求速率分析.json` | AI 请求速率分析的结构化版本 |
 
 ---
 

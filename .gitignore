@@ -8,10 +8,16 @@ __pycache__/
 
 # API keys & credentials
 .env
+api_env.sh
 *.key
 
 # Excel grade files (contain student names/IDs/scores)
 *.xlsx
+
+# Local submissions, course data, and generated jobs
+homework/
+job/
+answers/
 
 # OS files
 .DS_Store
